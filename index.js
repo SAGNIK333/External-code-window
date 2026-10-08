@@ -1,5 +1,6 @@
-// Code Window v1.2 - SillyTavern extension
+// Code Window v1.3 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a sandboxed iframe.
+// v1.3: full screen mode (default) with floating close button, viewport-height fix, real generating detection, ST.stop().
 // v1.2: streaming updates, ST.state.generating, maximize button.
 // v1.1: pages get a global `ST` object (live chat state, variables, send/insert helpers).
 (() => {
@@ -8,6 +9,7 @@
 
     const defaults = Object.freeze({
         left: null, top: null, width: 720, height: 600,
+        fullscreen: true,         // cover the whole screen (floating close button top-right)
         allowScripts: true,       // run <script> inside the page
         allowBridge: true,        // page may read chat state + fill/send the chat input
         autoRender: false,        // auto-render last code block of new AI messages
@@ -29,6 +31,7 @@
     //   ST.onUpdate(fn)          fn(state) runs now (once data arrives) and after every new/edited message
     //   ST.send(t) / ST.insert(t) / ST.append(t)   chat input helpers
     //   ST.setVar(name, value)   save a chat variable (shows up in ST.state.vars)
+    //   ST.stop()                stop the current generation
     const HELPER = `<script>
 window.ST={state:{},_cbs:[],
 onUpdate:function(cb){this._cbs.push(cb);if(this.state.ready){try{cb(this.state)}catch(x){console.error(x)}}},
@@ -36,6 +39,7 @@ send:function(t){parent.postMessage({type:'st-send',text:String(t)},'*')},
 insert:function(t){parent.postMessage({type:'st-insert',text:String(t)},'*')},
 append:function(t){parent.postMessage({type:'st-append',text:String(t)},'*')},
 setVar:function(n,v){parent.postMessage({type:'st-setvar',name:String(n),value:v},'*')},
+stop:function(){parent.postMessage({type:'st-stop'},'*')},
 request:function(){parent.postMessage({type:'st-request'},'*')}};
 addEventListener('message',function(e){var d=e.data;if(d&&d.type==='st-state'){ST.state=Object.assign({ready:true},d.state);ST._cbs.forEach(function(cb){try{cb(ST.state)}catch(x){console.error(x)}})}});
 addEventListener('DOMContentLoaded',function(){ST.request()});
@@ -75,7 +79,13 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
     function setStatus(t) { const el = document.getElementById('cw_status'); if (el) el.textContent = t; }
 
     // ---------- chat state -> page ----------
-    let generating = false;
+    // True while ST is generating: ST shows its Stop button only then (more reliable than events).
+    function isGenerating() {
+        const stop = document.getElementById('mes_stop');
+        if (!stop) return false;
+        const cs = getComputedStyle(stop);
+        return cs.display !== 'none' && cs.visibility !== 'hidden';
+    }
     function getState() {
         const c = ctx();
         const chat = c.chat || [];
@@ -89,7 +99,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
             lastMessage: last ? toMsg(last) : null,
             lastCharMessage: lastChar ? lastChar.mes : '',
             messages: visible.slice(-20).map(toMsg),
-            generating,
+            generating: isGenerating(),
             vars: { ...((c.chatMetadata && c.chatMetadata.variables) || {}) },
         };
     }
@@ -109,6 +119,12 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         if (!pushTimer) pushTimer = setTimeout(() => { pushTimer = null; lastPush = Date.now(); pushState(); }, 130);
     }
 
+    // Real visible height (handles mobile browser bars and the on-screen keyboard)
+    function setVh() {
+        const h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        document.documentElement.style.setProperty('--cw-vh', h + 'px');
+    }
+
     // ---------- window ----------
     function openWindow() {
         document.getElementById('cw_window').classList.add('cw_open');
@@ -119,10 +135,12 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         w.classList.toggle('cw_open');
         if (w.classList.contains('cw_open')) setTimeout(pushState, 100);
     }
-    function toggleMax() {
+    function setFullscreen(on) {
         const w = document.getElementById('cw_window');
-        w.classList.toggle('cw_max');
-        document.getElementById('cw_btn_max').classList.toggle('cw_on', w.classList.contains('cw_max'));
+        w.classList.toggle('cw_full', on);
+        document.getElementById('cw_btn_max').classList.toggle('cw_on', on);
+        settings().fullscreen = on; save();
+        setVh();
     }
     function setEditing(on) {
         const w = document.getElementById('cw_window');
@@ -168,7 +186,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
 
     function persistGeometry() {
         const w = document.getElementById('cw_window');
-        if (w.classList.contains('cw_max')) return;
+        if (w.classList.contains('cw_full')) return;
         const s = settings();
         const r = w.getBoundingClientRect();
         s.left = Math.round(r.left); s.top = Math.round(r.top);
@@ -179,14 +197,18 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
     function createWindow() {
         const s = settings();
         const html = `
-<div id="cw_window" style="width:${s.width}px;height:${s.height}px;${s.left !== null ? `left:${s.left}px;top:${s.top}px;right:auto;` : ''}">
+<div id="cw_window" class="${s.fullscreen ? 'cw_full' : ''}" style="width:${s.width}px;height:${s.height}px;${s.left !== null ? `left:${s.left}px;top:${s.top}px;right:auto;` : ''}">
   <div id="cw_header">
     <span id="cw_title">Code Window</span>
     <span class="cw_btn" id="cw_btn_edit" title="Edit code">&lt;/&gt;</span>
-    <span class="cw_btn" id="cw_btn_max" title="Maximize / restore">&#9974;</span>
+    <span class="cw_btn" id="cw_btn_max" title="Full screen on/off">&#9974;</span>
     <span class="cw_btn" id="cw_btn_run" title="Re-run">&#9654;</span>
     <span class="cw_btn" id="cw_btn_clear" title="Clear">&#8855;</span>
     <span class="cw_btn" id="cw_btn_close" title="Close">&#10005;</span>
+  </div>
+  <div id="cw_float">
+    <span class="cw_btn" id="cw_f_exit" title="Exit full screen">&#9974;</span>
+    <span class="cw_btn" id="cw_f_close" title="Close">&#10005;</span>
   </div>
   <div id="cw_body">
     <iframe id="cw_frame" sandbox="allow-scripts allow-forms allow-modals"></iframe>
@@ -203,13 +225,19 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         const w = document.getElementById('cw_window');
         const frame = document.getElementById('cw_frame');
         makeDraggable(w, document.getElementById('cw_header'));
+        setVh();
+        window.addEventListener('resize', setVh);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', setVh);
+        document.getElementById('cw_btn_max').classList.toggle('cw_on', !!s.fullscreen);
 
         new ResizeObserver(() => { if (w.classList.contains('cw_open')) persistGeometry(); }).observe(w);
 
         frame.addEventListener('load', () => setTimeout(pushState, 50));
 
         document.getElementById('cw_btn_close').onclick = closeWindow;
-        document.getElementById('cw_btn_max').onclick = toggleMax;
+        document.getElementById('cw_btn_max').onclick = () => setFullscreen(!w.classList.contains('cw_full'));
+        document.getElementById('cw_f_exit').onclick = () => setFullscreen(false);
+        document.getElementById('cw_f_close').onclick = closeWindow;
         document.getElementById('cw_btn_edit').onclick = () => setEditing(!w.classList.contains('cw_editing'));
         document.getElementById('cw_btn_run').onclick = () => render(document.getElementById('cw_editor').value || settings().lastCode);
         document.getElementById('cw_btn_clear').onclick = () => {
@@ -244,6 +272,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         const c = ctx();
 
         if (d.type === 'st-request') { pushState(); return; }
+        if (d.type === 'st-stop') { document.getElementById('mes_stop')?.click(); return; }
 
         if (d.type === 'st-setvar') {
             if (typeof d.name !== 'string' || !d.name) return;
@@ -306,10 +335,14 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
             .forEach((t) => t && eventSource.on(t, refresh));
         eventSource.on(T.CHARACTER_MESSAGE_RENDERED, () => setTimeout(autoRenderLast, 250));
         const on = (t, fn) => t && eventSource.on(t, fn);
-        on(T.GENERATION_STARTED, () => { generating = true; pushState(); });
-        const done = () => { generating = false; setTimeout(pushState, 80); };
-        on(T.GENERATION_ENDED, done);
-        on(T.GENERATION_STOPPED, done);
+        const soon = () => setTimeout(pushState, 80);
+        on(T.GENERATION_STARTED, soon);
+        on(T.GENERATION_ENDED, soon);
+        on(T.GENERATION_STOPPED, soon);
+        on(T.MESSAGE_RECEIVED, soon);
+        // safety net: catch any generating on/off change events might miss
+        let wasGen = false;
+        setInterval(() => { const g = isGenerating(); if (g !== wasGen) { wasGen = g; pushState(); } }, 600);
         on(T.STREAM_TOKEN_RECEIVED, pushThrottled);
         refresh();
     });
