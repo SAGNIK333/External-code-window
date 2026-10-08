@@ -86,3 +86,5 @@
 @media (max-width: 700px) {
     #cw_window { top: 50px; right: 1vw; left: 1vw; width: 98vw !important; height: 70vh; }
 }
+
+#cw_window.cw_max { left: 1vw !important; top: 1vh !important; right: auto !important; width: 98vw !important; height: 96vh !important; max-height: 98vh; }

@@ -1,12 +1,13 @@
-// Code Window v1.1 - SillyTavern extension
+// Code Window v1.2 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a sandboxed iframe.
+// v1.2: streaming updates, ST.state.generating, maximize button.
 // v1.1: pages get a global `ST` object (live chat state, variables, send/insert helpers).
 (() => {
     const MODULE = 'code_window';
     const ctx = () => SillyTavern.getContext();
 
     const defaults = Object.freeze({
-        left: null, top: null, width: 460, height: 560,
+        left: null, top: null, width: 720, height: 600,
         allowScripts: true,       // run <script> inside the page
         allowBridge: true,        // page may read chat state + fill/send the chat input
         autoRender: false,        // auto-render last code block of new AI messages
@@ -74,6 +75,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
     function setStatus(t) { const el = document.getElementById('cw_status'); if (el) el.textContent = t; }
 
     // ---------- chat state -> page ----------
+    let generating = false;
     function getState() {
         const c = ctx();
         const chat = c.chat || [];
@@ -87,6 +89,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
             lastMessage: last ? toMsg(last) : null,
             lastCharMessage: lastChar ? lastChar.mes : '',
             messages: visible.slice(-20).map(toMsg),
+            generating,
             vars: { ...((c.chatMetadata && c.chatMetadata.variables) || {}) },
         };
     }
@@ -99,6 +102,13 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         try { frame.contentWindow.postMessage({ type: 'st-state', state: getState() }, '*'); } catch (e) { console.warn('[Code Window] pushState failed', e); }
     }
 
+    let lastPush = 0, pushTimer = null;
+    function pushThrottled() {
+        const now = Date.now();
+        if (now - lastPush > 120) { lastPush = now; pushState(); return; }
+        if (!pushTimer) pushTimer = setTimeout(() => { pushTimer = null; lastPush = Date.now(); pushState(); }, 130);
+    }
+
     // ---------- window ----------
     function openWindow() {
         document.getElementById('cw_window').classList.add('cw_open');
@@ -108,6 +118,11 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         const w = document.getElementById('cw_window');
         w.classList.toggle('cw_open');
         if (w.classList.contains('cw_open')) setTimeout(pushState, 100);
+    }
+    function toggleMax() {
+        const w = document.getElementById('cw_window');
+        w.classList.toggle('cw_max');
+        document.getElementById('cw_btn_max').classList.toggle('cw_on', w.classList.contains('cw_max'));
     }
     function setEditing(on) {
         const w = document.getElementById('cw_window');
@@ -153,6 +168,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
 
     function persistGeometry() {
         const w = document.getElementById('cw_window');
+        if (w.classList.contains('cw_max')) return;
         const s = settings();
         const r = w.getBoundingClientRect();
         s.left = Math.round(r.left); s.top = Math.round(r.top);
@@ -167,6 +183,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
   <div id="cw_header">
     <span id="cw_title">Code Window</span>
     <span class="cw_btn" id="cw_btn_edit" title="Edit code">&lt;/&gt;</span>
+    <span class="cw_btn" id="cw_btn_max" title="Maximize / restore">&#9974;</span>
     <span class="cw_btn" id="cw_btn_run" title="Re-run">&#9654;</span>
     <span class="cw_btn" id="cw_btn_clear" title="Clear">&#8855;</span>
     <span class="cw_btn" id="cw_btn_close" title="Close">&#10005;</span>
@@ -192,6 +209,7 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
         frame.addEventListener('load', () => setTimeout(pushState, 50));
 
         document.getElementById('cw_btn_close').onclick = closeWindow;
+        document.getElementById('cw_btn_max').onclick = toggleMax;
         document.getElementById('cw_btn_edit').onclick = () => setEditing(!w.classList.contains('cw_editing'));
         document.getElementById('cw_btn_run').onclick = () => render(document.getElementById('cw_editor').value || settings().lastCode);
         document.getElementById('cw_btn_clear').onclick = () => {
@@ -287,6 +305,12 @@ addEventListener('DOMContentLoaded',function(){ST.request()});
          T.MESSAGE_SWIPED, T.MESSAGE_DELETED, T.CHAT_CHANGED]
             .forEach((t) => t && eventSource.on(t, refresh));
         eventSource.on(T.CHARACTER_MESSAGE_RENDERED, () => setTimeout(autoRenderLast, 250));
+        const on = (t, fn) => t && eventSource.on(t, fn);
+        on(T.GENERATION_STARTED, () => { generating = true; pushState(); });
+        const done = () => { generating = false; setTimeout(pushState, 80); };
+        on(T.GENERATION_ENDED, done);
+        on(T.GENERATION_STOPPED, done);
+        on(T.STREAM_TOKEN_RECEIVED, pushThrottled);
         refresh();
     });
 })();
