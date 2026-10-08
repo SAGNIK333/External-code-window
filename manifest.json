@@ -1,0 +1,11 @@
+{
+    "display_name": "Code Window",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Rachit",
+    "version": "1.1.0",
+    "homePage": ""
+}
