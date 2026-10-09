@@ -1,5 +1,6 @@
-// Code Window v1.9 - SillyTavern extension
+// Code Window v1.10 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
+// v1.10: Modern style only in full screen (small window = classic code window, always opens small); faster typing.
 // v1.9: edit any message (AI + user), swipe versions kept on regenerate (< 2/3 >), right-panel picture follows the turns (Gallery).
 // v1.8: font size (px) controls for the Modern style (Settings page).
 // v1.7: Modern style: no top header, compact left menu with Full screen / Close, wider chat.
@@ -19,7 +20,7 @@
 
     const defaults = Object.freeze({
         left: null, top: null, width: 720, height: 600,
-        fullscreen: true,
+        fullscreen: false,        // the window always opens small; full screen is per session
         allowScripts: true,       // run <script> inside the page
         allowBridge: true,        // page may read chat state + fill/send the chat input
         allowExternal: true,      // page may load https images/fonts/CSS/CDN scripts (never allows network calls)
@@ -352,7 +353,7 @@ ST.onUpdate(function (s) {
         frame.srcdoc = buildDoc(code, s);
         rendered = true;
     }
-    function run() { settings().theme = 'custom'; save(); runCustom(); }   // explicit "run my code"
+    function run() { if (modernNow()) { settings().theme = 'custom'; save(); } runCustom(); }   // explicit "run my code"
     function runCustom() {
         const s = ensureProject();
         flushEditor();
@@ -452,19 +453,25 @@ ST.onUpdate(function (s) {
         const w = $id('cw_window'), s = settings();
         w.classList.remove('cw_away'); $id('cw_pill').classList.remove('cw_show');
         w.classList.add('cw_open');
-        if (s.fullscreen) enterBrowserFs();
         if (s.mode === 'run') {
-            if (s.theme === 'modern') mxShow();
+            if (modernNow()) mxShow();
             else if (!rendered) runCustom();   // your code only runs once you open the window
         }
         setTimeout(pushState, 100);
     }
-    function closeWindow() { exitBrowserFs(); closeSettings(); $id('cw_pill').classList.remove('cw_show'); $id('cw_window').classList.remove('cw_away', 'cw_open'); }
+    function closeWindow() {
+        exitBrowserFs(); closeSettings();
+        $id('cw_pill').classList.remove('cw_show');
+        $id('cw_window').classList.remove('cw_away', 'cw_open', 'cw_full');   // always reopens as the small window
+        $id('cw_btn_max').classList.remove('cw_on');
+        settings().fullscreen = false; syncTheme();
+    }
     function toggleWindow() { $id('cw_window').classList.contains('cw_open') ? closeWindow() : openWindow(); }
     function setFullscreen(on) {
         $id('cw_window').classList.toggle('cw_full', on);
         $id('cw_btn_max').classList.toggle('cw_on', on);
         settings().fullscreen = on; save();
+        fullChanged();
         if (on) enterBrowserFs(); else exitBrowserFs();
         setVh();
         if (typeof mxSyncFs === 'function' && mx.built) setTimeout(mxSyncFs, 250);
@@ -478,9 +485,17 @@ ST.onUpdate(function (s) {
         $id('cw_m_code').classList.toggle('cw_on', m === 'code');
         $id('cw_m_run').classList.toggle('cw_on', m === 'run');
         if (m === 'code') { renderTabs(); loadEditor(); }
-        else if (s.theme === 'modern' && $id('cw_window').classList.contains('cw_open')) mxShow();
+        else if (modernNow() && $id('cw_window').classList.contains('cw_open')) mxShow();
     }
-    function syncTheme() { $id('cw_window').classList.toggle('cw_theme_modern', settings().theme === 'modern'); }
+    // The Modern style only shows in full screen. The small window is always the classic code window.
+    const modernNow = () => { const w = $id('cw_window'); return !!w && settings().theme === 'modern' && w.classList.contains('cw_full'); };
+    function syncTheme() { $id('cw_window').classList.toggle('cw_theme_modern', modernNow()); }
+    function fullChanged() {
+        const w = $id('cw_window'), s = settings();
+        syncTheme();
+        if (!w.classList.contains('cw_open') || s.mode !== 'run') return;
+        if (modernNow()) mxShow(); else if (!rendered) runCustom();
+    }
     function updateThemeCards() {
         document.querySelectorAll('.cw_theme').forEach((c) => c.classList.toggle('cw_on', c.dataset.theme === settings().theme));
     }
@@ -488,7 +503,11 @@ ST.onUpdate(function (s) {
         const s = settings();
         s.theme = t === 'custom' ? 'custom' : 'modern'; save();
         syncTheme(); updateThemeCards(); closeSettings();
-        if (s.mode === 'run') { if (s.theme === 'modern') mxShow(); else runCustom(); }
+        if (s.mode === 'run') {
+            if (modernNow()) mxShow();
+            else if (s.theme === 'custom' || !rendered) runCustom();
+            else if (s.theme === 'modern') toast('Modern style shows in full screen. The small window stays the classic code window.');
+        }
     }
 
     // ---------- colour settings page ----------
@@ -785,7 +804,7 @@ ST.onUpdate(function (s) {
     function createWindow() {
         const s = ensureProject();
         const html = `
-<div id="cw_window" class="${s.fullscreen ? 'cw_full' : ''}" style="width:${s.width}px;height:${s.height}px;${s.left !== null ? `left:${s.left}px;top:${s.top}px;right:auto;` : ''}">
+<div id="cw_window" class="" style="width:${s.width}px;height:${s.height}px;${s.left !== null ? `left:${s.left}px;top:${s.top}px;right:auto;` : ''}">
   <div id="cw_header">
     <span id="cw_title">Code Window</span>
     <span id="cw_mode">
@@ -824,10 +843,10 @@ ST.onUpdate(function (s) {
         <span id="cw_set_title">Settings</span>
         <span class="cw_btn" id="cw_set_reset" title="Reset colours to default">Reset colours</span>
       </div>
-      <div class="cw_sethead">Theme</div>
+      <div class="cw_sethead">Theme (shows in full screen)</div>
       <div id="cw_themes">
-        <div class="cw_theme" data-theme="modern"><b>Modern style</b><span>Built-in roleplay UI: chat, characters, gallery, info, notes, lore.</span></div>
-        <div class="cw_theme" data-theme="custom"><b>My code</b><span>Runs your own tabs (index.html, style.css ...).</span></div>
+        <div class="cw_theme" data-theme="modern"><b>Modern style</b><span>Built-in roleplay UI (full screen only).</span></div>
+        <div class="cw_theme" data-theme="custom"><b>My code</b><span>Full screen runs your own tabs too. The small window always does.</span></div>
       </div>
       <div class="cw_sethead">Right panel picture</div>
       <label class="cw_chk"><input type="checkbox" id="cw_o_hero"> Change the big picture every AI turn (cycles through your Gallery pictures)</label>
@@ -865,7 +884,7 @@ ST.onUpdate(function (s) {
         if (window.visualViewport) window.visualViewport.addEventListener('resize', setVh);
         document.addEventListener('fullscreenchange', () => setTimeout(setVh, 100));
         document.addEventListener('webkitfullscreenchange', () => setTimeout(setVh, 100));
-        $id('cw_btn_max').classList.toggle('cw_on', !!s.fullscreen);
+        s.fullscreen = false;
         new ResizeObserver(() => { if (w.classList.contains('cw_open')) persistGeometry(); }).observe(w);
         frame.addEventListener('load', () => setTimeout(pushState, 50));
 
@@ -918,7 +937,7 @@ ST.onUpdate(function (s) {
             el.checked = !!s[key];
             el.onchange = () => {
                 s[key] = el.checked; save();
-                if (rerun && rendered && s.mode === 'run' && s.theme === 'custom') runCustom();
+                if (rerun && rendered && s.mode === 'run' && !modernNow()) runCustom();
                 if (key === 'allowBridge' && el.checked) pushState();
             };
         };
@@ -1113,7 +1132,7 @@ ST.onUpdate(function (s) {
     function backToWindow() {
         $id('cw_window').classList.remove('cw_away');
         $id('cw_pill').classList.remove('cw_show');
-        if (settings().fullscreen) enterBrowserFs();
+        if ($id('cw_window').classList.contains('cw_full')) enterBrowserFs();
         setTimeout(() => { setVh(); if (mxActive()) mxAll(); }, 200);
     }
     const stClick = (id, label) => { const el = $id(id); if (el) el.click(); else toast((label || id) + ' is not available'); };
@@ -1246,7 +1265,17 @@ ST.onUpdate(function (s) {
         $id('mx_b_mic').onclick = () => { const m = $id('microphone_button'); if (m) m.click(); else toast('Enable the Speech Recognition extension in SillyTavern to use the microphone'); };
         $id('mx_send').onclick = mxSend;
         const ta = $id('mx_in');
-        ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 130) + 'px'; };
+        let raf = 0, shrink = false;
+        ta.oninput = (e) => {              // no layout work per keystroke: grow only when needed, once per frame
+            if (e && ((e.inputType || '').startsWith('delete') || e.inputType === 'insertLineBreak')) shrink = true;
+            if (raf) return;
+            raf = requestAnimationFrame(() => {
+                raf = 0;
+                if (!ta.value) { ta.style.height = ''; shrink = false; return; }
+                if (shrink) { shrink = false; ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 130) + 'px'; }
+                else if (ta.scrollHeight > ta.clientHeight + 1) ta.style.height = Math.min(ta.scrollHeight, 130) + 'px';
+            });
+        };
         ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); mxSend(); } };
         $id('mx_more').onclick = () => { mx.limit += 60; mxRender(); };
         $id('mx_msgs').onclick = (e) => {
@@ -1298,7 +1327,7 @@ ST.onUpdate(function (s) {
     function mxScroll(force) { const s = $id('mx_scroll'); if (s && (force || mx.stick)) s.scrollTop = s.scrollHeight; }
     function mxActive() {
         const w = $id('cw_window'), s = settings();
-        return mx.built && w && w.classList.contains('cw_open') && !w.classList.contains('cw_away') && s.theme === 'modern' && s.mode === 'run';
+        return mx.built && w && w.classList.contains('cw_open') && !w.classList.contains('cw_away') && modernNow() && s.mode === 'run';
     }
 
     // ----- navigation -----

@@ -384,3 +384,13 @@
 .mx_ebar button { padding: 7px 18px; border-radius: 18px; border: 1px solid var(--line); background: rgba(255, 255, 255, .08); font-size: 14px; }
 .mx_ebar .mx_esave { background: linear-gradient(135deg, #ff7a93, var(--acc2)); border-color: transparent; color: #fff; }
 .cw_chk { display: flex; align-items: center; gap: 8px; font-size: .9em; padding: 4px 2px; }
+
+/* ---------- v1.10 performance: no backdrop blur (very slow on tablets), cheaper paints ---------- */
+.mx_head, .mx_bub, .mx_comp { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+.mx_bub { background: rgba(30, 17, 22, .86); box-shadow: none; }
+.mx_user .mx_bub { background: rgba(12, 26, 48, .9); }
+.mx_comp { background: rgba(22, 13, 18, .92); }
+.mx_head { background: rgba(22, 13, 18, .85); }
+.mx_row { contain: layout style; }
+.mx_send { box-shadow: none; }
+.mx_comp textarea { will-change: auto; }
