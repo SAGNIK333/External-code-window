@@ -1,5 +1,6 @@
-// Code Window v1.4 - SillyTavern extension
+// Code Window v1.5 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
+// v1.5: colour settings (gear icon) for "dialogue", *italic*, **bold** and [brackets], applied live to the rendered page.
 // v1.4: multi-file projects (tabs + imports), Code / Run Code switch, built-in *italic* / **bold** formatting,
 //       safe project export/import (+undo), fullscreen editor fix, CSP lock-down of the rendered page.
 // v1.3: full screen mode, viewport-height fix, real generating detection, ST.stop().
@@ -24,6 +25,7 @@
         files: null,              // [{name, content}] - files[0] is always the entry (index.html)
         active: 'index.html',
         backup: null,             // one-level undo slot for import / delete / new
+        colors: null,             // {quote,italic,bold,bracket: {on, color}} - see colors()
         lastCode: '',             // legacy (v1.3), migrated into files[0]
     });
 
@@ -79,6 +81,30 @@ ST.onUpdate(function (s) {
             n = `${m[1]}-${i++}${m[2] || ''}`;
         }
         return n;
+    }
+
+    // ---------- text colours ----------
+    const COLOR_KEYS = [
+        ['quote', 'Dialogue  "quotes"', 'st-q'],
+        ['italic', 'Italic  *asterisk*', 'st-i'],
+        ['bold', 'Bold  **double asterisk**', 'st-b'],
+        ['bracket', 'Brackets  [ square ]', 'st-br'],
+    ];
+    const COLOR_DEF = { quote: '#ffd27f', italic: '#b9a7ff', bold: '#ff9ec4', bracket: '#7fd1ff' };
+    function colors() {
+        const s = settings();
+        if (!s.colors || typeof s.colors !== 'object') s.colors = {};
+        for (const [k] of COLOR_KEYS) {
+            let c = s.colors[k];
+            if (!c || typeof c !== 'object') c = s.colors[k] = { on: true, color: COLOR_DEF[k] };
+            c.on = c.on !== false;
+            if (typeof c.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(c.color)) c.color = COLOR_DEF[k];   // only plain hex ever reaches CSS
+        }
+        return s.colors;
+    }
+    function styleCss() {
+        const c = colors();
+        return COLOR_KEYS.map(([k, , cls]) => c[k].on ? `.${cls}{color:${c[k].color}}` : '').filter(Boolean).join('\n');
     }
 
     function ensureProject() {
@@ -174,19 +200,24 @@ ST.onUpdate(function (s) {
         function fmt(text) {
             var h = esc(text), codes = [];
             h = h.replace(/`([^`\n]+)`/g, function (_, c) { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
-            h = h.replace(RE3, '<strong><em>$1</em></strong>').replace(RE2, '<strong>$1</strong>').replace(RE1, '<em>$1</em>').replace(RES, '<del>$1</del>');
+            // [brackets] and "dialogue" first (quotes are already &quot; so our own class="" attributes can't be matched)
+            h = h.replace(/\[(?:(?!\n\n)[^\[\]])+\]/g, function (m) { return '<span class="st-br">' + m + '</span>'; });
+            h = h.replace(/&quot;(?:(?!&quot;|\n\n)[\s\S])+?&quot;/g, function (m) { return '<span class="st-q">' + m + '</span>'; });
+            h = h.replace(/\u201c(?:(?![\u201c\u201d]|\n\n)[\s\S])+?\u201d/g, function (m) { return '<span class="st-q">' + m + '</span>'; });
+            h = h.replace(RE3, '<strong class="st-b"><em class="st-i">$1</em></strong>').replace(RE2, '<strong class="st-b">$1</strong>').replace(RE1, '<em class="st-i">$1</em>').replace(RES, '<del>$1</del>');
             return h.replace(/\u0000(\d+)\u0000/g, function (_, i) { return '<code>' + codes[i] + '</code>'; });
         }
         var SKIP = { SCRIPT: 1, STYLE: 1, TEXTAREA: 1, INPUT: 1, CODE: 1, PRE: 1, NOSCRIPT: 1, OPTION: 1, SELECT: 1, HEAD: 1, TITLE: 1 };
         function skip(n) {
             for (var p = n.parentNode; p && p.nodeType === 1; p = p.parentNode) {
+                if (p.getAttribute && /\bst-(?:q|i|b|br)\b/.test(p.getAttribute('class') || '')) return true;   // already formatted
                 if (SKIP[p.nodeName] || p.isContentEditable || (p.hasAttribute && p.hasAttribute('data-st-raw'))) return true;
             }
             return false;
         }
         function processText(n) {
             var t = n.nodeValue;
-            if (!t || (t.indexOf('*') < 0 && t.indexOf('`') < 0 && t.indexOf('~~') < 0)) return;
+            if (!t || !/[*`"\u201c\[]|~~/.test(t)) return;
             var h = fmt(t);
             if (h === esc(t)) return;
             var tpl = document.createElement('template');
@@ -213,6 +244,11 @@ ST.onUpdate(function (s) {
         };
         addEventListener('message', function (e) {
             var d = e.data;
+            if (d && d.type === 'st-style' && typeof d.css === 'string') {
+                var se = document.getElementById('st-fmt-style');
+                if (se) se.textContent = d.css;
+                return;
+            }
             if (d && d.type === 'st-state') {
                 ST.state = Object.assign({ ready: true }, d.state);
                 ST._cbs.forEach(function (cb) { try { cb(ST.state); } catch (x) { console.error(x); } });
@@ -248,7 +284,7 @@ ST.onUpdate(function (s) {
 
     function helperTag(s) {
         const cfg = JSON.stringify({ md: !!s.autoFormat });
-        return `<script>window.__ST_CFG=${cfg};(${pageHelper.toString()})();<\/script>`;
+        return `<style id="st-fmt-style">${styleCss()}</style><script>window.__ST_CFG=${cfg};(${pageHelper.toString()})();<\/script>`;
     }
 
     // Security policy applied INSIDE the rendered page. connect-src 'none' means the page can never make
@@ -397,7 +433,7 @@ ST.onUpdate(function (s) {
         if (settings().mode === 'run' && !rendered) run();   // untrusted code only runs once you open the window
         setTimeout(pushState, 100);
     }
-    function closeWindow() { exitBrowserFs(); $id('cw_window').classList.remove('cw_open'); }
+    function closeWindow() { exitBrowserFs(); closeSettings(); $id('cw_window').classList.remove('cw_open'); }
     function toggleWindow() { $id('cw_window').classList.contains('cw_open') ? closeWindow() : openWindow(); }
     function setFullscreen(on) {
         $id('cw_window').classList.toggle('cw_full', on);
@@ -409,11 +445,44 @@ ST.onUpdate(function (s) {
     function setMode(m) {
         const s = settings();
         s.mode = m; save();
+        closeSettings();
         $id('cw_window').classList.toggle('cw_mode_code', m === 'code');
         $id('cw_m_code').classList.toggle('cw_on', m === 'code');
         $id('cw_m_run').classList.toggle('cw_on', m === 'run');
         if (m === 'code') { renderTabs(); loadEditor(); }
     }
+
+    // ---------- colour settings page ----------
+    function applyColors() {
+        const css = styleCss();
+        $id('cw_pv_style').textContent = css.replace(/^\./gm, '#cw_setpane .');
+        save();
+        const f = $id('cw_frame');
+        try { if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'st-style', css }, '*'); } catch { /* ignore */ }
+    }
+    function buildSettingsPane() {
+        const list = $id('cw_setlist'), c = colors();
+        list.textContent = '';
+        COLOR_KEYS.forEach(([k, label, cls]) => {
+            const row = document.createElement('div'); row.className = 'cw_setrow';
+            const on = document.createElement('input'); on.type = 'checkbox'; on.checked = c[k].on; on.title = 'Colour on/off';
+            const name = document.createElement('span'); name.className = 'cw_setname ' + cls; name.textContent = label;
+            const pick = document.createElement('input'); pick.type = 'color'; pick.value = c[k].color;
+            const hex = document.createElement('code'); hex.textContent = c[k].color;
+            on.onchange = () => { c[k].on = on.checked; applyColors(); };
+            pick.oninput = () => { c[k].color = pick.value; hex.textContent = pick.value; applyColors(); };
+            row.append(on, name, pick, hex);
+            list.appendChild(row);
+        });
+        applyColors();
+    }
+    function resetColors() {
+        const c = colors();
+        for (const [k] of COLOR_KEYS) { c[k].on = true; c[k].color = COLOR_DEF[k]; }
+        buildSettingsPane();
+    }
+    function openSettings() { buildSettingsPane(); $id('cw_window').classList.add('cw_set_open'); }
+    function closeSettings() { const w = $id('cw_window'); if (w) w.classList.remove('cw_set_open'); }
 
     function clampIntoView(w) {
         const r = w.getBoundingClientRect();
@@ -646,10 +715,12 @@ ST.onUpdate(function (s) {
     <span id="cw_mode">
       <span class="cw_seg" id="cw_m_code" title="Edit code">&lt;/&gt; Code</span><span class="cw_seg" id="cw_m_run" title="Run the project (click again to re-run)">&#9654; Run Code</span>
     </span>
+    <span class="cw_btn" id="cw_btn_set" title="Text colours (dialogue, italic, bold, brackets)">&#9881;</span>
     <span class="cw_btn" id="cw_btn_max" title="Full screen on/off">&#9974;</span>
     <span class="cw_btn" id="cw_btn_close" title="Close">&#10005;</span>
   </div>
   <div id="cw_float">
+    <span class="cw_btn" id="cw_f_set" title="Text colours">&#9881;</span>
     <span class="cw_btn" id="cw_f_code" title="Back to code">&lt;/&gt; Code</span>
     <span class="cw_btn" id="cw_f_exit" title="Exit full screen">&#9974;</span>
     <span class="cw_btn" id="cw_f_close" title="Close">&#10005;</span>
@@ -668,6 +739,18 @@ ST.onUpdate(function (s) {
         <input type="file" id="cw_import_input" multiple accept=".json,.html,.htm,.css,.js,.txt" hidden>
       </div>
       <textarea id="cw_editor" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+    </div>
+    <div id="cw_setpane">
+      <style id="cw_pv_style"></style>
+      <div id="cw_setbar">
+        <span class="cw_btn" id="cw_set_back">&larr; Back</span>
+        <span id="cw_set_title">Text colours</span>
+        <span class="cw_btn" id="cw_set_reset">Reset</span>
+      </div>
+      <div id="cw_setlist"></div>
+      <div id="cw_pv_label">Preview</div>
+      <div id="cw_pv"><span class="st-q">"I didn't think you'd come,"</span> <em class="st-i">she says softly, setting the cup down.</em> <strong class="st-b">Stay.</strong> <span class="st-br">[ 8:48 PM | Living Room ]</span></div>
+      <div id="cw_sethint">Applies live to your rendered page. Colours are used by the built-in formatting (MD switch / <code>ST.format()</code>). You can still override them in your own CSS with <code>.st-q .st-i .st-b .st-br</code>.</div>
     </div>
   </div>
   <div id="cw_footer">
@@ -695,6 +778,10 @@ ST.onUpdate(function (s) {
         $id('cw_f_close').onclick = closeWindow;
         $id('cw_btn_max').onclick = () => setFullscreen(!w.classList.contains('cw_full'));
         $id('cw_f_exit').onclick = () => setFullscreen(false);
+        $id('cw_btn_set').onclick = openSettings;
+        $id('cw_f_set').onclick = openSettings;
+        $id('cw_set_back').onclick = closeSettings;
+        $id('cw_set_reset').onclick = resetColors;
         $id('cw_m_code').onclick = () => setMode('code');
         $id('cw_f_code').onclick = () => setMode('code');
         $id('cw_m_run').onclick = run;

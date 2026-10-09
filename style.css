@@ -138,3 +138,19 @@
 /* real browser full screen */
 #cw_window:fullscreen { width: 100% !important; height: 100% !important; max-width: none; max-height: none; }
 #cw_window:-webkit-full-screen { width: 100% !important; height: 100% !important; max-width: none; max-height: none; }
+
+/* ---------- colour settings page ---------- */
+#cw_setpane { display: none; position: absolute; inset: 0; z-index: 8; flex-direction: column; gap: 10px; padding: 10px; overflow-y: auto; background: #1b1b24; color: #eee; box-sizing: border-box; }
+#cw_window.cw_set_open #cw_setpane { display: flex; }
+#cw_setbar { display: flex; align-items: center; gap: 8px; }
+#cw_setbar .cw_btn { padding: 6px 12px; font-size: .95em; }
+#cw_set_title { flex: 1; font-weight: 600; text-align: center; }
+#cw_setlist { display: flex; flex-direction: column; gap: 8px; }
+.cw_setrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, .06); }
+.cw_setrow input[type=checkbox] { flex: 0 0 auto; width: 20px; height: 20px; margin: 0; }
+.cw_setname { flex: 1; min-width: 0; font-size: .95em; }
+.cw_setrow input[type=color] { flex: 0 0 auto; width: 52px; height: 34px; padding: 0; border: 1px solid #666; border-radius: 6px; background: none; cursor: pointer; }
+.cw_setrow code { flex: 0 0 auto; font-size: .8em; opacity: .7; min-width: 62px; }
+#cw_pv_label { font-size: .8em; opacity: .6; }
+#cw_pv { padding: 12px; border-radius: 8px; background: rgba(0, 0, 0, .35); line-height: 1.6; }
+#cw_sethint { font-size: .78em; opacity: .6; line-height: 1.4; }
