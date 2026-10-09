@@ -324,3 +324,33 @@
     .mx_bub { max-width: 94%; }
     .mx_user .mx_bub { max-width: 90%; }
 }
+
+/* =====================================================================
+   v1.7 layout: no header, compact left menu, chat gets the space
+   ===================================================================== */
+.mx { grid-template-columns: minmax(132px, 11%) minmax(0, 1fr) minmax(230px, 22%); }
+.mx_left { padding: 10px 8px; gap: 6px; }
+.mx_logo { font-size: 17px; gap: 6px; padding: 2px 6px 8px; white-space: nowrap; }
+.mx_logo_i { width: 24px; height: 24px; }
+.mx_nav { gap: 2px; }
+.mx_navb { padding: 0 10px; gap: 10px; min-height: 44px; font-size: 14px; border-radius: 12px; }
+.mx_navb .mx_i { width: 20px; height: 20px; }
+.mx_navfoot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 8px; border-top: 1px solid var(--line); }
+.mx_mid { padding: 8px 10px; position: relative; }
+.mx_bub { max-width: 96%; }
+.mx_user .mx_bub { max-width: 90%; }
+.mx_fab { display: none; position: absolute; top: 12px; z-index: 3; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: rgba(22, 13, 18, .8); align-items: center; justify-content: center; padding: 0; }
+.mx_fab_l { left: 14px; } .mx_fab_r { right: 14px; }
+.mx_scroll { padding-top: 4px; }
+@container (max-width: 899px) {
+    .mx { grid-template-columns: minmax(132px, 16%) minmax(0, 1fr); }
+    .mx_fab_r { display: inline-flex; }
+    .mx_scroll { padding-top: 48px; }
+}
+@container (max-width: 640px) {
+    .mx { grid-template-columns: minmax(0, 1fr); }
+    .mx_left { width: min(240px, 80%); }
+    .mx_fab_l { display: inline-flex; }
+    .mx_bub { max-width: 100%; }
+    .mx_user .mx_bub { max-width: 94%; }
+}

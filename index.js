@@ -1,5 +1,6 @@
-// Code Window v1.6 - SillyTavern extension
+// Code Window v1.7 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
+// v1.7: Modern style: no top header, compact left menu with Full screen / Close, wider chat.
 // v1.6: built-in "Modern style" theme (default): chat, characters, gallery / info / notes / lore panels, theme picker.
 // v1.5: colour settings (gear icon) for "dialogue", *italic*, **bold** and [brackets], applied live to the rendered page.
 // v1.4: multi-file projects (tabs + imports), Code / Run Code switch, built-in *italic* / **bold** formatting,
@@ -462,6 +463,7 @@ ST.onUpdate(function (s) {
         settings().fullscreen = on; save();
         if (on) enterBrowserFs(); else exitBrowserFs();
         setVh();
+        if (typeof mxSyncFs === 'function' && mx.built) setTimeout(mxSyncFs, 250);
     }
     function setMode(m) {
         const s = settings();
@@ -993,6 +995,8 @@ ST.onUpdate(function (s) {
         send: '<svg class="mx_i" viewBox="0 0 24 24"><path fill="currentColor" d="M4 3l17 9-17 9 3-9z"/></svg>',
         stop: '<svg class="mx_i" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
         chev: SV('<path d="M9 6l6 6-6 6"/>'),
+        full: SV('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
+        close: SV('<path d="M6 6l12 12M18 6L6 18"/>'),
         menu: SV('<path d="M4 7h16M4 12h16M4 17h16"/>'),
         logo: '<svg class="mx_logo_i" viewBox="0 0 48 48" fill="none" stroke="#ff7a93" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 7c6 4 10 10 8 16-2 5-6 8-8 17-2-9-6-12-8-17-2-6 2-12 8-16z"/><path d="M7 21c6-2 12 0 17 7M41 21c-6-2-12 0-17 7"/><path d="M13 36c5-5 9-5 11-2M35 36c-5-5-9-5-11-2"/></svg>',
     };
@@ -1109,10 +1113,11 @@ ST.onUpdate(function (s) {
   <div class="mx_bg" id="mx_bg"></div>
   <aside class="mx_left" id="mx_left">
     <div class="mx_logo">${IC.logo}<span>SillyTavern</span></div>
-    <nav class="mx_nav" id="mx_nav">${NAV.map(([id, label]) => `<button class="mx_navb" data-nav="${id}">${IC[id]}<span>${label}</span>${id === 'chat' ? IC.chev : ''}</button>`).join('')}</nav>
+    <nav class="mx_nav" id="mx_nav">${NAV.map(([id, label]) => `<button class="mx_navb" data-nav="${id}">${IC[id]}<span>${label}</span></button>`).join('')}</nav>
+    <div class="mx_navfoot"><button class="mx_navb" id="mx_fs">${IC.full}<span>Full screen</span></button><button class="mx_navb" id="mx_cl">${IC.close}<span>Close</span></button></div>
   </aside>
   <main class="mx_mid">
-    <header class="mx_head">
+    <header class="mx_head" hidden>
       <button class="mx_ib mx_burger" id="mx_burger" title="Menu">${IC.menu}</button>
       <div class="mx_who" id="mx_who">
         <img class="mx_hav" id="mx_h_av" alt="">
@@ -1124,6 +1129,8 @@ ST.onUpdate(function (s) {
         <button class="mx_ib" id="mx_b_more" data-menu title="More">${IC.dots}</button>
       </div>
     </header>
+    <button class="mx_fab mx_fab_l" id="mx_fab_l" title="Menu">${IC.menu}</button>
+    <button class="mx_fab mx_fab_r" id="mx_fab_r" title="Character panel">${IC.image}</button>
     <div class="mx_sbar" id="mx_sbar" hidden><input id="mx_sin" placeholder="Search messages..." autocomplete="off"><button class="mx_ib" id="mx_sx">&#10005;</button></div>
     <section class="mx_chatview" id="mx_chatview"><div class="mx_scroll" id="mx_scroll">
       <button class="mx_more" id="mx_more" hidden>Load earlier messages</button>
@@ -1155,6 +1162,12 @@ ST.onUpdate(function (s) {
         $id('mx_nav').onclick = (e) => { const b = e.target.closest('[data-nav]'); if (b) mxNav(b.dataset.nav); };
         $id('mx_tabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) mxTab(b.dataset.tab); };
         $id('mx_burger').onclick = () => root.classList.toggle('mx_l_open');
+        $id('mx_fab_l').onclick = () => root.classList.toggle('mx_l_open');
+        $id('mx_fab_r').onclick = () => root.classList.toggle('mx_r_open');
+        $id('mx_fs').onclick = () => { setFullscreen(!mxRealFs()); setTimeout(mxSyncFs, 250); };
+        $id('mx_cl').onclick = closeWindow;
+        document.addEventListener('fullscreenchange', () => setTimeout(mxSyncFs, 150));
+        document.addEventListener('webkitfullscreenchange', () => setTimeout(mxSyncFs, 150));
         $id('mx_who').onclick = () => root.classList.toggle('mx_r_open');
         $id('mx_scrim').onclick = () => root.classList.remove('mx_l_open', 'mx_r_open');
         $id('mx_b_search').onclick = () => {
@@ -1175,6 +1188,8 @@ ST.onUpdate(function (s) {
             ['Close Code Window', closeWindow],
         ]);
         $id('mx_b_plus').onclick = () => mxMenu('bottom', [
+            ['Search messages', () => $id('mx_b_search').click()],
+            ['Scroll to latest', () => mxScroll(true)],
             ['Regenerate', () => stClick('option_regenerate', 'Regenerate')],
             ['Continue', () => stClick('option_continue', 'Continue')],
             ['Impersonate', () => stClick('option_impersonate', 'Impersonate')],
@@ -1192,6 +1207,13 @@ ST.onUpdate(function (s) {
         $id('mx_lb').onclick = (e) => { if (e.target.id === 'mx_lb') $id('mx_lb').hidden = true; };
         $id('mx_lb_x').onclick = () => { $id('mx_lb').hidden = true; };
         mx.built = true;
+    }
+    const mxRealFs = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+    function mxSyncFs() {
+        const b = $id('mx_fs');
+        if (!b) return;
+        const on = mxRealFs();
+        b.querySelector('span').textContent = on ? 'Exit full screen' : 'Full screen';
     }
     function mxMenu(where, items) {
         const m = $id('mx_menu');
@@ -1358,7 +1380,7 @@ ST.onUpdate(function (s) {
         mxBg(); mxHeader(); mxTab(mx.tab); mxRender();
         if (mx.view === 'characters') mxCharacters();
     }
-    function mxShow() { mxBuild(); mxView(mx.view); mxAll(); setTimeout(() => mxScroll(true), 80); }
+    function mxShow() { mxBuild(); mxView(mx.view); mxAll(); mxSyncFs(); setTimeout(() => mxScroll(true), 80); }
 
     function mxTab(name) {
         mx.tab = name;
