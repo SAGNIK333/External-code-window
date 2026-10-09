@@ -1,5 +1,6 @@
-// Code Window v1.7 - SillyTavern extension
+// Code Window v1.8 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
+// v1.8: font size (px) controls for the Modern style (Settings page).
 // v1.7: Modern style: no top header, compact left menu with Full screen / Close, wider chat.
 // v1.6: built-in "Modern style" theme (default): chat, characters, gallery / info / notes / lore panels, theme picker.
 // v1.5: colour settings (gear icon) for "dialogue", *italic*, **bold** and [brackets], applied live to the rendered page.
@@ -28,6 +29,7 @@
         active: 'index.html',
         backup: null,             // one-level undo slot for import / delete / new
         colors: null,             // {quote,italic,bold,bracket: {on, color}} - see colors()
+        fs: null,                 // Modern style font sizes in px {chat, menu, panel}; 0 = auto
         theme: 'modern',          // 'modern' (built-in UI) | 'custom' (your code tabs)
         rp: null,                 // {notes:{}, lore:{}} per character
         lastCode: '',             // legacy (v1.3), migrated into files[0]
@@ -488,6 +490,39 @@ ST.onUpdate(function (s) {
     }
 
     // ---------- colour settings page ----------
+    const FS_KEYS = [['chat', 'Chat text', 20], ['menu', 'Left menu', 14], ['panel', 'Right panel', 14]];
+    function fsCfg() {
+        const s = settings();
+        if (!s.fs || typeof s.fs !== 'object') s.fs = {};
+        for (const [k] of FS_KEYS) { const v = Number(s.fs[k]); s.fs[k] = v >= 10 && v <= 40 ? Math.round(v) : 0; }
+        return s.fs;
+    }
+    function applyFs() {
+        const f = fsCfg(), el = $id('cw_modern');
+        if (!el) return;
+        const set = (n, v) => { if (v) el.style.setProperty(n, v + 'px'); else el.style.removeProperty(n); };
+        set('--mx-fs-chat', f.chat); set('--mx-fs-name', f.chat && Math.round(f.chat * 1.15)); set('--mx-fs-in', f.chat);
+        set('--mx-fs-menu', f.menu);
+        set('--mx-fs-panel', f.panel); set('--mx-fs-panelst', f.panel && f.panel + 3); set('--mx-fs-tab', f.panel && f.panel + 2);
+    }
+    function buildFsRows() {
+        const box = $id('cw_fslist'), f = fsCfg();
+        box.textContent = '';
+        FS_KEYS.forEach(([k, label, def]) => {
+            const row = document.createElement('div'); row.className = 'cw_setrow';
+            const name = document.createElement('span'); name.className = 'cw_setname'; name.textContent = label;
+            const rng = document.createElement('input'); rng.type = 'range'; rng.min = 10; rng.max = 36; rng.step = 1; rng.value = f[k] || def; rng.className = 'cw_rng';
+            const val = document.createElement('code'); val.textContent = f[k] ? f[k] + ' px' : 'Auto';
+            const auto = document.createElement('label'); auto.className = 'cw_autolbl';
+            const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !f[k];
+            auto.append(cb, document.createTextNode(' Auto'));
+            const sync = () => { val.textContent = f[k] ? f[k] + ' px' : 'Auto'; applyFs(); save(); };
+            rng.oninput = () => { f[k] = Number(rng.value); cb.checked = false; sync(); };
+            cb.onchange = () => { f[k] = cb.checked ? 0 : Number(rng.value); sync(); };
+            row.append(name, auto, rng, val);
+            box.appendChild(row);
+        });
+    }
     function applyColors() {
         const css = styleCss();
         $id('cw_pv_style').textContent = css.replace(/^\./gm, '#cw_setpane .');
@@ -501,6 +536,7 @@ ST.onUpdate(function (s) {
         const list = $id('cw_setlist'), c = colors();
         list.textContent = '';
         updateThemeCards();
+        buildFsRows();
         COLOR_KEYS.forEach(([k, label, cls]) => {
             const row = document.createElement('div'); row.className = 'cw_setrow';
             const on = document.createElement('input'); on.type = 'checkbox'; on.checked = c[k].on; on.title = 'Colour on/off';
@@ -791,6 +827,8 @@ ST.onUpdate(function (s) {
         <div class="cw_theme" data-theme="modern"><b>Modern style</b><span>Built-in roleplay UI: chat, characters, gallery, info, notes, lore.</span></div>
         <div class="cw_theme" data-theme="custom"><b>My code</b><span>Runs your own tabs (index.html, style.css ...).</span></div>
       </div>
+      <div class="cw_sethead">Text size (Modern style)</div>
+      <div id="cw_fslist"></div>
       <div class="cw_sethead">Text colours</div>
       <div id="cw_setlist"></div>
       <div id="cw_pv_label">Preview</div>
@@ -887,6 +925,7 @@ ST.onUpdate(function (s) {
         bind('cw_opt_auto', 'autoRender', false);
 
         syncTheme();
+        applyFs();
         applyColors();
         setMode(s.mode === 'code' ? 'code' : 'run');
     }

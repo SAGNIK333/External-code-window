@@ -354,3 +354,17 @@
     .mx_bub { max-width: 100%; }
     .mx_user .mx_bub { max-width: 94%; }
 }
+
+/* ---------- v1.8 font size controls (CSS variables set from Settings; fallback = old auto sizes) ---------- */
+.mx_body { font-size: var(--mx-fs-chat, clamp(16px, 1.95cqw, 22px)); }
+.mx_nm { font-size: var(--mx-fs-name, clamp(18px, 2.1cqw, 24px)); }
+.mx_comp textarea { font-size: var(--mx-fs-in, 20px); }
+.mx_navb { font-size: var(--mx-fs-menu, 14px); }
+.mx_tabbody { font-size: var(--mx-fs-panel, 14px); }
+.mx_st { font-size: var(--mx-fs-panelst, 17px); }
+.mx_tabs button { font-size: var(--mx-fs-tab, 16px); }
+.mx_note { font-size: var(--mx-fs-panel, 15px); }
+#cw_fslist { display: flex; flex-direction: column; gap: 8px; }
+.cw_rng { flex: 1 1 120px; min-width: 80px; accent-color: #ff5d7d; }
+.cw_autolbl { display: inline-flex; align-items: center; gap: 3px; font-size: .8em; opacity: .8; white-space: nowrap; }
+#cw_fslist .cw_setrow code { min-width: 48px; text-align: right; }
