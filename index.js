@@ -1,5 +1,6 @@
-// Code Window v1.8 - SillyTavern extension
+// Code Window v1.9 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
+// v1.9: edit any message (AI + user), swipe versions kept on regenerate (< 2/3 >), right-panel picture follows the turns (Gallery).
 // v1.8: font size (px) controls for the Modern style (Settings page).
 // v1.7: Modern style: no top header, compact left menu with Full screen / Close, wider chat.
 // v1.6: built-in "Modern style" theme (default): chat, characters, gallery / info / notes / lore panels, theme picker.
@@ -30,6 +31,7 @@
         backup: null,             // one-level undo slot for import / delete / new
         colors: null,             // {quote,italic,bold,bracket: {on, color}} - see colors()
         fs: null,                 // Modern style font sizes in px {chat, menu, panel}; 0 = auto
+        heroTurn: true,           // right-panel big picture cycles through Gallery pictures each AI turn
         theme: 'modern',          // 'modern' (built-in UI) | 'custom' (your code tabs)
         rp: null,                 // {notes:{}, lore:{}} per character
         lastCode: '',             // legacy (v1.3), migrated into files[0]
@@ -827,6 +829,8 @@ ST.onUpdate(function (s) {
         <div class="cw_theme" data-theme="modern"><b>Modern style</b><span>Built-in roleplay UI: chat, characters, gallery, info, notes, lore.</span></div>
         <div class="cw_theme" data-theme="custom"><b>My code</b><span>Runs your own tabs (index.html, style.css ...).</span></div>
       </div>
+      <div class="cw_sethead">Right panel picture</div>
+      <label class="cw_chk"><input type="checkbox" id="cw_o_hero"> Change the big picture every AI turn (cycles through your Gallery pictures)</label>
       <div class="cw_sethead">Text size (Modern style)</div>
       <div id="cw_fslist"></div>
       <div class="cw_sethead">Text colours</div>
@@ -924,6 +928,9 @@ ST.onUpdate(function (s) {
         bind('cw_opt_ext', 'allowExternal', true);
         bind('cw_opt_auto', 'autoRender', false);
 
+        const hero = $id('cw_o_hero');
+        hero.checked = s.heroTurn !== false;
+        hero.onchange = () => { s.heroTurn = hero.checked; save(); if (mx.built) { mx.heroTurn = -1; mxHero(); } };
         syncTheme();
         applyFs();
         applyColors();
@@ -1036,12 +1043,13 @@ ST.onUpdate(function (s) {
         chev: SV('<path d="M9 6l6 6-6 6"/>'),
         full: SV('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
         close: SV('<path d="M6 6l12 12M18 6L6 18"/>'),
+        edit: SV('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>'),
         menu: SV('<path d="M4 7h16M4 12h16M4 17h16"/>'),
         logo: '<svg class="mx_logo_i" viewBox="0 0 48 48" fill="none" stroke="#ff7a93" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 7c6 4 10 10 8 16-2 5-6 8-8 17-2-9-6-12-8-17-2-6 2-12 8-16z"/><path d="M7 21c6-2 12 0 17 7M41 21c-6-2-12 0-17 7"/><path d="M13 36c5-5 9-5 11-2M35 36c-5-5-9-5-11-2"/></svg>',
     };
     const NAV = [['chat', 'Chat'], ['characters', 'Characters'], ['lorebook', 'Lorebook'], ['worldinfo', 'World Info'], ['extensions', 'Extensions'], ['generation', 'Generation'], ['settings', 'Settings']];
 
-    const mx = { built: false, view: 'chat', tab: 'gallery', limit: 60, search: '', stick: true, gen: false };
+    const mx = { built: false, view: 'chat', tab: 'gallery', limit: 60, search: '', stick: true, gen: false, galVer: 0, heroUrls: [], heroKey: null, heroVer: -1, heroTok: 0, heroTurn: -1, avatarFull: '', avatarThumb: '' };
     const mxNodes = new Map();
     const rp = () => {
         const s = settings();
@@ -1221,7 +1229,7 @@ ST.onUpdate(function (s) {
         $id('mx_file').onchange = async (e) => { const f = [...e.target.files]; e.target.value = ''; await mxAddImages(f); };
         $id('mx_b_more').onclick = () => mxMenu('top', [
             ['Scroll to latest', () => mxScroll(true)],
-            ['Regenerate last reply', () => stClick('option_regenerate', 'Regenerate')],
+            ['Regenerate last reply', mxRegen],
             ['Open code editor', () => setMode('code')],
             [$id('cw_window').classList.contains('cw_full') ? 'Exit full screen' : 'Full screen', () => setFullscreen(!$id('cw_window').classList.contains('cw_full'))],
             ['Close Code Window', closeWindow],
@@ -1229,7 +1237,7 @@ ST.onUpdate(function (s) {
         $id('mx_b_plus').onclick = () => mxMenu('bottom', [
             ['Search messages', () => $id('mx_b_search').click()],
             ['Scroll to latest', () => mxScroll(true)],
-            ['Regenerate', () => stClick('option_regenerate', 'Regenerate')],
+            ['Regenerate (keeps old versions)', mxRegen],
             ['Continue', () => stClick('option_continue', 'Continue')],
             ['Impersonate', () => stClick('option_impersonate', 'Impersonate')],
             ['Stop generating', () => stClick('mes_stop', 'Stop')],
@@ -1241,6 +1249,13 @@ ST.onUpdate(function (s) {
         ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 130) + 'px'; };
         ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); mxSend(); } };
         $id('mx_more').onclick = () => { mx.limit += 60; mxRender(); };
+        $id('mx_msgs').onclick = (e) => {
+            const row = e.target.closest('.mx_row');
+            if (!row) return;
+            if (e.target.closest('.mx_ed')) mxEdit(row);
+            else if (e.target.closest('.mx_swl')) mxSwipe('left');
+            else if (e.target.closest('.mx_swr')) { if (!isGenerating()) mxSwipe('right'); }
+        };
         $id('mx_scroll').onscroll = (e) => { const s = e.target; mx.stick = s.scrollHeight - s.scrollTop - s.clientHeight < 160; };
         root.addEventListener('click', (e) => { if (!e.target.closest('#mx_menu') && !e.target.closest('[data-menu]')) $id('mx_menu').hidden = true; });
         $id('mx_lb').onclick = (e) => { if (e.target.id === 'mx_lb') $id('mx_lb').hidden = true; };
@@ -1329,13 +1344,13 @@ ST.onUpdate(function (s) {
     }
 
     // ----- chat -----
-    function mxFill(el, m) {
+    function mxFill(el, m, lastAi) {
         const user = !!m.is_user;
         el.className = 'mx_row ' + (user ? 'mx_user' : 'mx_char');
         const ch = curChar();
         const av = m.force_avatar || (user ? mxUserAv() : (m.original_avatar ? mxThumb(m.original_avatar) : (ch ? mxThumb(ch.avatar) : '')));
         const paras = String(m.mes || '').split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${mxFmt(p)}</p>`).join('') || '<p class="mx_dim">...</p>';
-        el.innerHTML = `<div class="mx_bub"><img class="mx_ava" alt="" src="${mxEsc(av)}"><div class="mx_main"><div class="mx_meta"><span class="mx_nm">${mxEsc(user ? 'You' : (m.name || ''))}</span>${user ? '' : '<span class="mx_heart">&#9829;</span>'}<span class="mx_time">${mxEsc(mxTime(m.send_date))}</span></div><div class="mx_body">${paras}</div></div></div>`;
+        el.innerHTML = `<div class="mx_bub"><img class="mx_ava" alt="" src="${mxEsc(av)}"><div class="mx_main"><div class="mx_meta"><span class="mx_nm">${mxEsc(user ? 'You' : (m.name || ''))}</span>${user ? '' : '<span class="mx_heart">&#9829;</span>'}<span class="mx_time">${mxEsc(mxTime(m.send_date))}</span><button class="mx_ed" title="Edit message">${IC.edit}</button></div><div class="mx_body">${paras}</div>${lastAi ? `<div class="mx_sw"><button class="mx_swl" title="Previous version">&#8249;</button><span>${(Number(m.swipe_id) || 0) + 1}/${(m.swipes && m.swipes.length) || 1}</span><button class="mx_swr" title="Next version / generate a new one">&#8250;</button></div>` : ''}</div></div>`;
         const img = el.querySelector('img');
         if (!av) img.style.visibility = 'hidden';
         img.onerror = () => { img.style.visibility = 'hidden'; };
@@ -1351,11 +1366,14 @@ ST.onUpdate(function (s) {
         const keep = new Set(shown.map((x) => x[0]));
         for (const [i, el] of mxNodes) if (!keep.has(i)) { el.remove(); mxNodes.delete(i); }
         let prev = null;
+        const lastIdx = shown.length ? shown[shown.length - 1][0] : -1;
         for (const [i, m] of shown) {
             let el = mxNodes.get(i);
             if (!el) { el = document.createElement('div'); mxNodes.set(i, el); }
-            const sig = `${m.is_user ? 1 : 0}|${m.name}|${m.swipe_id || 0}|${m.mes}|${m.force_avatar || ''}`;
-            if (el._sig !== sig) { mxFill(el, m); el._sig = sig; }
+            el._idx = i;
+            const lastAi = i === lastIdx && !m.is_user;
+            const sig = `${m.is_user ? 1 : 0}|${m.name}|${m.swipe_id || 0}|${m.swipes ? m.swipes.length : 1}|${lastAi ? 1 : 0}|${m.mes}|${m.force_avatar || ''}`;
+            if (el._sig !== sig && !el._editing) { mxFill(el, m, lastAi); el._sig = sig; }
             el.classList.toggle('mx_hide', !!mx.search && !String(m.mes || '').toLowerCase().includes(mx.search));
             const want = prev ? prev.nextSibling : list.firstChild;
             if (el !== want) list.insertBefore(el, want);
@@ -1363,6 +1381,101 @@ ST.onUpdate(function (s) {
         }
         mxTyping();
         mxScroll(false);
+        const turns = mxTurns();
+        if (turns !== mx.heroTurn) { mx.heroTurn = turns; mxHero(); }
+    }
+    const mxTurns = () => (ctx().chat || []).filter((m) => m && !m.is_system && !m.is_user).length;
+
+    // ----- edit message (AI + user) -----
+    function mxEdit(row) {
+        const i = row._idx, m = ctx().chat && ctx().chat[i];
+        if (!m || row._editing) return;
+        row._editing = true;
+        const body = row.querySelector('.mx_body');
+        body.textContent = '';
+        const ta = document.createElement('textarea'); ta.className = 'mx_eta'; ta.value = m.mes || '';
+        const bar = document.createElement('div'); bar.className = 'mx_ebar';
+        const ok = document.createElement('button'); ok.textContent = 'Save'; ok.className = 'mx_esave';
+        const no = document.createElement('button'); no.textContent = 'Cancel';
+        const size = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 4, 420) + 'px'; };
+        ta.oninput = size;
+        const done = () => { row._editing = false; row._sig = null; mxRender(); };
+        no.onclick = done;
+        ok.onclick = async () => { ok.disabled = true; await mxSaveEdit(i, ta.value); done(); };
+        bar.append(ok, no);
+        body.append(ta, bar);
+        size(); ta.focus();
+    }
+    async function mxSaveEdit(i, text) {
+        const c = ctx(), m = c.chat && c.chat[i];
+        if (!m) return;
+        m.mes = text;
+        if (Array.isArray(m.swipes) && m.swipes.length) m.swipes[Number(m.swipe_id) || 0] = text;   // keep the active version in sync
+        try { if (typeof c.updateMessageBlock === 'function') c.updateMessageBlock(i, m); } catch { /* ignore */ }
+        try {
+            const T = c.eventTypes || {};
+            if (T.MESSAGE_EDITED) await c.eventSource.emit(T.MESSAGE_EDITED, i);
+            if (T.MESSAGE_UPDATED) await c.eventSource.emit(T.MESSAGE_UPDATED, i);
+        } catch { /* ignore */ }
+        try { const f = c.saveChat || c.saveChatConditional; if (typeof f === 'function') await f.call(c); else toast('Edited, but SillyTavern could not save the chat automatically'); }
+        catch (e) { console.warn('[Code Window] save failed', e); toast('Edit applied but saving failed'); }
+    }
+
+    // ----- swipes: regenerate keeps every previous version -----
+    function mxSwipe(dir) {
+        const el = document.querySelector('#chat .last_mes .swipe_' + dir);
+        if (!el) { toast('Swipe is not available for this message'); return false; }
+        el.click();
+        return true;
+    }
+    function mxRegen() {
+        const items = (ctx().chat || []).filter((m) => m && !m.is_system);
+        const last = items[items.length - 1];
+        if (!last) return;
+        if (last.is_user) { stClick('option_regenerate', 'Regenerate'); return; }
+        let guard = 0;
+        const step = () => {                        // go to the newest version, then one more click generates a NEW version
+            const m = (ctx().chat || []).filter((x) => x && !x.is_system).pop();
+            if (!m || guard++ > 25) return;
+            const atEnd = !m.swipes || (Number(m.swipe_id) || 0) >= m.swipes.length - 1;
+            if (!mxSwipe('right')) return;
+            if (!atEnd) setTimeout(step, 600);
+        };
+        step();
+    }
+
+    // ----- right panel big picture: follows the turns -----
+    function mxHeroList(key) {     // one shared load per (character, gallery version) so quick repeated calls can't race
+        if (mx.heroP && mx.heroPKey === key && mx.heroPVer === mx.galVer) return mx.heroP;
+        mx.heroPKey = key; mx.heroPVer = mx.galVer;
+        mx.heroP = (async () => {
+            let items = [];
+            try { items = key ? await gdb.list(key) : []; } catch { /* no gallery */ }
+            items.sort((a, b) => a.ts - b.ts);
+            mx.heroUrls.forEach((u) => URL.revokeObjectURL(u));
+            mx.heroUrls = items.map((it) => URL.createObjectURL(it.blob));
+        })();
+        return mx.heroP;
+    }
+    async function mxHero() {
+        const img = $id('mx_hero_img');
+        if (!img || !mx.built) return;
+        const key = charKey(), tok = ++mx.heroTok;
+        await mxHeroList(key);
+        if (tok !== mx.heroTok) return;
+        const n = mx.heroUrls.length;
+        let src = mx.avatarFull || '';
+        if (settings().heroTurn !== false && n) src = mx.heroUrls[(Math.max(1, mxTurns()) - 1) % n];
+        if (img._want === src) return;
+        img._want = src;
+        img.style.opacity = 0;
+        setTimeout(() => {
+            if (img._want !== src) return;
+            img.onload = () => { img.style.opacity = 1; };
+            img.onerror = () => { if (mx.avatarThumb && img.src.indexOf(mx.avatarThumb) < 0) img.src = mx.avatarThumb; else img.style.opacity = 1; };
+            img.style.visibility = src ? '' : 'hidden';
+            if (src) img.src = src;
+        }, 180);
     }
     function mxTyping() {
         const items = (ctx().chat || []).filter((m) => m && !m.is_system);
@@ -1411,8 +1524,8 @@ ST.onUpdate(function (s) {
         $id('mx_r_name').textContent = name;
         $id('mx_r_quote').textContent = quote;
         const h = $id('mx_h_av'); h.style.visibility = av ? '' : 'hidden'; h.src = av || '';
-        const r = $id('mx_hero_img'); r.style.visibility = hero ? '' : 'hidden'; r.src = hero || '';
-        r.onerror = () => { r.src = av; };
+        mx.avatarFull = hero; mx.avatarThumb = av;
+        mxHero();
     }
     function mxAll() {
         if (!mx.built) return;
@@ -1444,7 +1557,7 @@ ST.onUpdate(function (s) {
             const im = document.createElement('img'); im.className = 'mx_tile'; im.src = url; im.alt = '';
             im.onclick = () => {
                 $id('mx_lb_img').src = url; $id('mx_lb').hidden = false;
-                $id('mx_lb_del').onclick = async () => { $id('mx_lb').hidden = true; try { await gdb.del(it.id); } catch { /* ignore */ } mxTab('gallery'); };
+                $id('mx_lb_del').onclick = async () => { $id('mx_lb').hidden = true; try { await gdb.del(it.id); } catch { /* ignore */ } mx.galVer++; mxTab('gallery'); mxHero(); };
             };
             grid.appendChild(im);
         });
@@ -1464,7 +1577,9 @@ ST.onUpdate(function (s) {
             try { const blob = await shrinkImage(f); await gdb.add(key, blob); added++; } catch (e) { console.warn('[Code Window] image add failed', e); }
         }
         if (added) toast(`Added ${added} picture${added > 1 ? 's' : ''}`);
+        mx.galVer++;
         mxTab('gallery');
+        mxHero();
     }
     function mxInfo(body) {
         const ch = curChar();
