@@ -374,17 +374,36 @@ ST.onUpdate(function (s) {
     }
 
     // ---------- window ----------
+    // Real browser full screen (hides the address bar + Android nav bar). Needs a user tap, so it is
+    // requested from button / menu clicks; if the browser refuses, the CSS full-window mode still works.
+    function enterBrowserFs() {
+        const w = $id('cw_window');
+        if (document.fullscreenElement || document.webkitFullscreenElement) return;
+        const rf = w.requestFullscreen || w.webkitRequestFullscreen;
+        if (!rf) return;
+        try {
+            const p = rf.call(w, { navigationUI: 'hide' });
+            if (p && p.catch) p.catch(() => {});
+        } catch { /* ignore */ }
+    }
+    function exitBrowserFs() {
+        if (!(document.fullscreenElement || document.webkitFullscreenElement)) return;
+        const ef = document.exitFullscreen || document.webkitExitFullscreen;
+        try { const p = ef && ef.call(document); if (p && p.catch) p.catch(() => {}); } catch { /* ignore */ }
+    }
     function openWindow() {
         $id('cw_window').classList.add('cw_open');
+        if (settings().fullscreen) enterBrowserFs();
         if (settings().mode === 'run' && !rendered) run();   // untrusted code only runs once you open the window
         setTimeout(pushState, 100);
     }
-    function closeWindow() { $id('cw_window').classList.remove('cw_open'); }
+    function closeWindow() { exitBrowserFs(); $id('cw_window').classList.remove('cw_open'); }
     function toggleWindow() { $id('cw_window').classList.contains('cw_open') ? closeWindow() : openWindow(); }
     function setFullscreen(on) {
         $id('cw_window').classList.toggle('cw_full', on);
         $id('cw_btn_max').classList.toggle('cw_on', on);
         settings().fullscreen = on; save();
+        if (on) enterBrowserFs(); else exitBrowserFs();
         setVh();
     }
     function setMode(m) {
@@ -666,6 +685,8 @@ ST.onUpdate(function (s) {
         setVh();
         window.addEventListener('resize', setVh);
         if (window.visualViewport) window.visualViewport.addEventListener('resize', setVh);
+        document.addEventListener('fullscreenchange', () => setTimeout(setVh, 100));
+        document.addEventListener('webkitfullscreenchange', () => setTimeout(setVh, 100));
         $id('cw_btn_max').classList.toggle('cw_on', !!s.fullscreen);
         new ResizeObserver(() => { if (w.classList.contains('cw_open')) persistGeometry(); }).observe(w);
         frame.addEventListener('load', () => setTimeout(pushState, 50));

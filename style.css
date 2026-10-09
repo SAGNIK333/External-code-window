@@ -134,3 +134,7 @@
 #cw_window.cw_full.cw_mode_code #cw_footer { display: flex; }
 #cw_window.cw_full.cw_mode_code #cw_float { display: none; }
 #cw_window.cw_full #cw_header { cursor: default; }
+
+/* real browser full screen */
+#cw_window:fullscreen { width: 100% !important; height: 100% !important; max-width: none; max-height: none; }
+#cw_window:-webkit-full-screen { width: 100% !important; height: 100% !important; max-width: none; max-height: none; }
