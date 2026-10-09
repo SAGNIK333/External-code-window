@@ -1,5 +1,6 @@
-// Code Window v1.5 - SillyTavern extension
+// Code Window v1.6 - SillyTavern extension
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
+// v1.6: built-in "Modern style" theme (default): chat, characters, gallery / info / notes / lore panels, theme picker.
 // v1.5: colour settings (gear icon) for "dialogue", *italic*, **bold** and [brackets], applied live to the rendered page.
 // v1.4: multi-file projects (tabs + imports), Code / Run Code switch, built-in *italic* / **bold** formatting,
 //       safe project export/import (+undo), fullscreen editor fix, CSP lock-down of the rendered page.
@@ -26,6 +27,8 @@
         active: 'index.html',
         backup: null,             // one-level undo slot for import / delete / new
         colors: null,             // {quote,italic,bold,bracket: {on, color}} - see colors()
+        theme: 'modern',          // 'modern' (built-in UI) | 'custom' (your code tabs)
+        rp: null,                 // {notes:{}, lore:{}} per character
         lastCode: '',             // legacy (v1.3), migrated into files[0]
     });
 
@@ -90,7 +93,8 @@ ST.onUpdate(function (s) {
         ['bold', 'Bold  **double asterisk**', 'st-b'],
         ['bracket', 'Brackets  [ square ]', 'st-br'],
     ];
-    const COLOR_DEF = { quote: '#ffd27f', italic: '#b9a7ff', bold: '#ff9ec4', bracket: '#7fd1ff' };
+    const COLOR_DEF_OLD = { quote: '#ffd27f', italic: '#b9a7ff', bold: '#ff9ec4', bracket: '#7fd1ff' };   // v1.5 defaults
+    const COLOR_DEF = { quote: '#f4eae6', italic: '#d3bdb6', bold: '#ffffff', bracket: '#e8a0a8' };
     function colors() {
         const s = settings();
         if (!s.colors || typeof s.colors !== 'object') s.colors = {};
@@ -99,6 +103,10 @@ ST.onUpdate(function (s) {
             if (!c || typeof c !== 'object') c = s.colors[k] = { on: true, color: COLOR_DEF[k] };
             c.on = c.on !== false;
             if (typeof c.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(c.color)) c.color = COLOR_DEF[k];   // only plain hex ever reaches CSS
+        }
+        if (s.colorsVer !== 2) {     // one-time: move untouched v1.5 defaults to the new Modern-style defaults
+            for (const [k] of COLOR_KEYS) if (s.colors[k].color.toLowerCase() === COLOR_DEF_OLD[k]) s.colors[k].color = COLOR_DEF[k];
+            s.colorsVer = 2; save();
         }
         return s.colors;
     }
@@ -183,14 +191,8 @@ ST.onUpdate(function (s) {
         return { code: resolveHtml(idx.content, [idx.name]), warnings };
     }
 
-    // ---------- helper injected into every rendered page (runs INSIDE the sandbox) ----------
-    // API:  ST.state / ST.onUpdate(fn) / ST.send / ST.insert / ST.append / ST.setVar / ST.stop
-    //       ST.format(text) -> safe HTML with *italic* **bold** ***both*** ~~strike~~ `code` and line breaks
-    //       ST.render(el, text) -> el.innerHTML = ST.format(text)
-    //       Auto mode ("MD" switch): plain text containing * ** etc is formatted automatically.
-    //       Add the attribute data-st-raw to any element to opt it out.
-    function pageHelper() {
-        var cfg = window.__ST_CFG || {};
+    // Shared formatter (also serialised into the sandboxed page, so it must stay self-contained)
+    function makeFmt() {
         var esc = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
         var INNER = '([^*\\s](?:[^*]*?[^*\\s])?)';
         var RE3 = new RegExp('\\*\\*\\*' + INNER + '\\*\\*\\*', 'g');
@@ -207,6 +209,19 @@ ST.onUpdate(function (s) {
             h = h.replace(RE3, '<strong class="st-b"><em class="st-i">$1</em></strong>').replace(RE2, '<strong class="st-b">$1</strong>').replace(RE1, '<em class="st-i">$1</em>').replace(RES, '<del>$1</del>');
             return h.replace(/\u0000(\d+)\u0000/g, function (_, i) { return '<code>' + codes[i] + '</code>'; });
         }
+        return { esc: esc, fmt: fmt };
+    }
+
+    // ---------- helper injected into every rendered page (runs INSIDE the sandbox) ----------
+    // API:  ST.state / ST.onUpdate(fn) / ST.send / ST.insert / ST.append / ST.setVar / ST.stop
+    //       ST.format(text) -> safe HTML with *italic* **bold** ***both*** ~~strike~~ `code` and line breaks
+    //       ST.render(el, text) -> el.innerHTML = ST.format(text)
+    //       Auto mode ("MD" switch): plain text containing * ** etc is formatted automatically.
+    //       Add the attribute data-st-raw to any element to opt it out.
+    function pageHelper() {
+        var cfg = window.__ST_CFG || {};
+        var F = makeFmt();
+        var esc = F.esc, fmt = F.fmt;
         var SKIP = { SCRIPT: 1, STYLE: 1, TEXTAREA: 1, INPUT: 1, CODE: 1, PRE: 1, NOSCRIPT: 1, OPTION: 1, SELECT: 1, HEAD: 1, TITLE: 1 };
         function skip(n) {
             for (var p = n.parentNode; p && p.nodeType === 1; p = p.parentNode) {
@@ -284,7 +299,7 @@ ST.onUpdate(function (s) {
 
     function helperTag(s) {
         const cfg = JSON.stringify({ md: !!s.autoFormat });
-        return `<style id="st-fmt-style">${styleCss()}</style><script>window.__ST_CFG=${cfg};(${pageHelper.toString()})();<\/script>`;
+        return `<style id="st-fmt-style">${styleCss()}</style><script>window.__ST_CFG=${cfg};var makeFmt=${makeFmt.toString()};(${pageHelper.toString()})();<\/script>`;
     }
 
     // Security policy applied INSIDE the rendered page. connect-src 'none' means the page can never make
@@ -332,7 +347,8 @@ ST.onUpdate(function (s) {
         frame.srcdoc = buildDoc(code, s);
         rendered = true;
     }
-    function run() {
+    function run() { settings().theme = 'custom'; save(); runCustom(); }   // explicit "run my code"
+    function runCustom() {
         const s = ensureProject();
         flushEditor();
         const { code, warnings } = assemble(s.files);
@@ -428,12 +444,17 @@ ST.onUpdate(function (s) {
         try { const p = ef && ef.call(document); if (p && p.catch) p.catch(() => {}); } catch { /* ignore */ }
     }
     function openWindow() {
-        $id('cw_window').classList.add('cw_open');
-        if (settings().fullscreen) enterBrowserFs();
-        if (settings().mode === 'run' && !rendered) run();   // untrusted code only runs once you open the window
+        const w = $id('cw_window'), s = settings();
+        w.classList.remove('cw_away'); $id('cw_pill').classList.remove('cw_show');
+        w.classList.add('cw_open');
+        if (s.fullscreen) enterBrowserFs();
+        if (s.mode === 'run') {
+            if (s.theme === 'modern') mxShow();
+            else if (!rendered) runCustom();   // your code only runs once you open the window
+        }
         setTimeout(pushState, 100);
     }
-    function closeWindow() { exitBrowserFs(); closeSettings(); $id('cw_window').classList.remove('cw_open'); }
+    function closeWindow() { exitBrowserFs(); closeSettings(); $id('cw_pill').classList.remove('cw_show'); $id('cw_window').classList.remove('cw_away', 'cw_open'); }
     function toggleWindow() { $id('cw_window').classList.contains('cw_open') ? closeWindow() : openWindow(); }
     function setFullscreen(on) {
         $id('cw_window').classList.toggle('cw_full', on);
@@ -446,16 +467,30 @@ ST.onUpdate(function (s) {
         const s = settings();
         s.mode = m; save();
         closeSettings();
+        syncTheme();
         $id('cw_window').classList.toggle('cw_mode_code', m === 'code');
         $id('cw_m_code').classList.toggle('cw_on', m === 'code');
         $id('cw_m_run').classList.toggle('cw_on', m === 'run');
         if (m === 'code') { renderTabs(); loadEditor(); }
+        else if (s.theme === 'modern' && $id('cw_window').classList.contains('cw_open')) mxShow();
+    }
+    function syncTheme() { $id('cw_window').classList.toggle('cw_theme_modern', settings().theme === 'modern'); }
+    function updateThemeCards() {
+        document.querySelectorAll('.cw_theme').forEach((c) => c.classList.toggle('cw_on', c.dataset.theme === settings().theme));
+    }
+    function setTheme(t) {
+        const s = settings();
+        s.theme = t === 'custom' ? 'custom' : 'modern'; save();
+        syncTheme(); updateThemeCards(); closeSettings();
+        if (s.mode === 'run') { if (s.theme === 'modern') mxShow(); else runCustom(); }
     }
 
     // ---------- colour settings page ----------
     function applyColors() {
         const css = styleCss();
         $id('cw_pv_style').textContent = css.replace(/^\./gm, '#cw_setpane .');
+        const mxs = document.getElementById('cw_mx_colors');
+        if (mxs) mxs.textContent = css.replace(/^\./gm, '#cw_modern .');
         save();
         const f = $id('cw_frame');
         try { if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'st-style', css }, '*'); } catch { /* ignore */ }
@@ -463,6 +498,7 @@ ST.onUpdate(function (s) {
     function buildSettingsPane() {
         const list = $id('cw_setlist'), c = colors();
         list.textContent = '';
+        updateThemeCards();
         COLOR_KEYS.forEach(([k, label, cls]) => {
             const row = document.createElement('div'); row.className = 'cw_setrow';
             const on = document.createElement('input'); on.type = 'checkbox'; on.checked = c[k].on; on.title = 'Colour on/off';
@@ -727,6 +763,7 @@ ST.onUpdate(function (s) {
   </div>
   <div id="cw_body">
     <iframe id="cw_frame" sandbox="allow-scripts allow-forms allow-modals" referrerpolicy="no-referrer"></iframe>
+    <div id="cw_modern"></div>
     <div id="cw_codepane">
       <div id="cw_tabrow"><div id="cw_tabs"></div><span class="cw_btn" id="cw_t_add" title="New file">+</span></div>
       <div id="cw_tools">
@@ -744,12 +781,24 @@ ST.onUpdate(function (s) {
       <style id="cw_pv_style"></style>
       <div id="cw_setbar">
         <span class="cw_btn" id="cw_set_back">&larr; Back</span>
-        <span id="cw_set_title">Text colours</span>
-        <span class="cw_btn" id="cw_set_reset">Reset</span>
+        <span id="cw_set_title">Settings</span>
+        <span class="cw_btn" id="cw_set_reset" title="Reset colours to default">Reset colours</span>
       </div>
+      <div class="cw_sethead">Theme</div>
+      <div id="cw_themes">
+        <div class="cw_theme" data-theme="modern"><b>Modern style</b><span>Built-in roleplay UI: chat, characters, gallery, info, notes, lore.</span></div>
+        <div class="cw_theme" data-theme="custom"><b>My code</b><span>Runs your own tabs (index.html, style.css ...).</span></div>
+      </div>
+      <div class="cw_sethead">Text colours</div>
       <div id="cw_setlist"></div>
       <div id="cw_pv_label">Preview</div>
       <div id="cw_pv"><span class="st-q">"I didn't think you'd come,"</span> <em class="st-i">she says softly, setting the cup down.</em> <strong class="st-b">Stay.</strong> <span class="st-br">[ 8:48 PM | Living Room ]</span></div>
+      <div class="cw_sethead">Window</div>
+      <div id="cw_winbtns">
+        <span class="cw_btn" id="cw_w_code">&lt;/&gt; Code editor</span>
+        <span class="cw_btn" id="cw_w_full">Full screen</span>
+        <span class="cw_btn" id="cw_w_close">Close window</span>
+      </div>
       <div id="cw_sethint">Applies live to your rendered page. Colours are used by the built-in formatting (MD switch / <code>ST.format()</code>). You can still override them in your own CSS with <code>.st-q .st-i .st-b .st-br</code>.</div>
     </div>
   </div>
@@ -763,6 +812,8 @@ ST.onUpdate(function (s) {
   </div>
 </div>`;
         document.body.insertAdjacentHTML('beforeend', html);
+        document.body.insertAdjacentHTML('beforeend', '<div id="cw_pill" title="Back to Code Window">&#8617; Code Window</div>');
+        document.head.insertAdjacentHTML('beforeend', '<style id="cw_mx_colors"></style>');
         const w = $id('cw_window'), frame = $id('cw_frame'), ta = $id('cw_editor');
         makeDraggable(w, $id('cw_header'));
         setVh();
@@ -781,6 +832,11 @@ ST.onUpdate(function (s) {
         $id('cw_btn_set').onclick = openSettings;
         $id('cw_f_set').onclick = openSettings;
         $id('cw_set_back').onclick = closeSettings;
+        $id('cw_pill').onclick = backToWindow;
+        document.querySelectorAll('.cw_theme').forEach((c) => { c.onclick = () => setTheme(c.dataset.theme); });
+        $id('cw_w_code').onclick = () => { closeSettings(); setMode('code'); };
+        $id('cw_w_full').onclick = () => { closeSettings(); setFullscreen(!w.classList.contains('cw_full')); };
+        $id('cw_w_close').onclick = closeWindow;
         $id('cw_set_reset').onclick = resetColors;
         $id('cw_m_code').onclick = () => setMode('code');
         $id('cw_f_code').onclick = () => setMode('code');
@@ -818,7 +874,7 @@ ST.onUpdate(function (s) {
             el.checked = !!s[key];
             el.onchange = () => {
                 s[key] = el.checked; save();
-                if (rerun && rendered && s.mode === 'run') run();
+                if (rerun && rendered && s.mode === 'run' && s.theme === 'custom') runCustom();
                 if (key === 'allowBridge' && el.checked) pushState();
             };
         };
@@ -828,6 +884,8 @@ ST.onUpdate(function (s) {
         bind('cw_opt_ext', 'allowExternal', true);
         bind('cw_opt_auto', 'autoRender', false);
 
+        syncTheme();
+        applyColors();
         setMode(s.mode === 'code' ? 'code' : 'run');
     }
 
@@ -906,9 +964,522 @@ ST.onUpdate(function (s) {
         $('#extensionsMenu').append(item);
     }
 
+
+    // =====================================================================
+    //  MODERN STYLE THEME  (built-in default UI, rendered natively - no user code involved)
+    // =====================================================================
+    const mxEsc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const mxFmt = makeFmt().fmt;
+    const mxHtml = (t) => mxFmt(t == null ? '' : t).replace(/\r?\n/g, '<br>');
+    const toast = (m) => { try { if (window.toastr) window.toastr.info(m); else console.log('[Code Window]', m); } catch { /* ignore */ } };
+    const mxThumb = (f) => `/thumbnail?type=avatar&file=${encodeURIComponent(f)}`;
+    const mxFull = (f) => `/characters/${encodeURIComponent(f)}`;
+
+    const SV = (d) => `<svg class="mx_i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+    const IC = {
+        chat: '<svg class="mx_i" viewBox="0 0 24 24"><path fill="#ff5d7d" d="M5 4h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7l-5 4v-4H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z"/><circle cx="8.5" cy="11" r="1.2" fill="#fff"/><circle cx="12" cy="11" r="1.2" fill="#fff"/><circle cx="15.5" cy="11" r="1.2" fill="#fff"/></svg>',
+        characters: SV('<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M16.5 14.2c2.6.3 4.5 2.4 4.5 5.8"/>'),
+        lorebook: SV('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>'),
+        worldinfo: SV('<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>'),
+        extensions: SV('<path d="M10 4a2 2 0 1 1 4 0v1h3a1 1 0 0 1 1 1v3h1a2 2 0 1 1 0 4h-1v3a1 1 0 0 1-1 1h-3v-1a2 2 0 1 0-4 0v1H7a1 1 0 0 1-1-1v-3H5a2 2 0 1 1 0-4h1V6a1 1 0 0 1 1-1h3z"/>'),
+        generation: SV('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>'),
+        settings: SV('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+        search: SV('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+        image: SV('<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 4 4 3-3 4 4"/>'),
+        dots: SV('<circle cx="12" cy="5" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="19" r="1.7" fill="currentColor"/>'),
+        plus: SV('<path d="M12 5v14M5 12h14"/>'),
+        spark: '<svg class="mx_i" viewBox="0 0 24 24"><path fill="#ffc94d" d="M10 3l1.8 5.2L17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8z"/><path fill="#ffc94d" d="M18 14l.9 2.6 2.6.9-2.6.9L18 21l-.9-2.6-2.6-.9 2.6-.9z"/></svg>',
+        mic: SV('<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
+        send: '<svg class="mx_i" viewBox="0 0 24 24"><path fill="currentColor" d="M4 3l17 9-17 9 3-9z"/></svg>',
+        stop: '<svg class="mx_i" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
+        chev: SV('<path d="M9 6l6 6-6 6"/>'),
+        menu: SV('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+        logo: '<svg class="mx_logo_i" viewBox="0 0 48 48" fill="none" stroke="#ff7a93" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 7c6 4 10 10 8 16-2 5-6 8-8 17-2-9-6-12-8-17-2-6 2-12 8-16z"/><path d="M7 21c6-2 12 0 17 7M41 21c-6-2-12 0-17 7"/><path d="M13 36c5-5 9-5 11-2M35 36c-5-5-9-5-11-2"/></svg>',
+    };
+    const NAV = [['chat', 'Chat'], ['characters', 'Characters'], ['lorebook', 'Lorebook'], ['worldinfo', 'World Info'], ['extensions', 'Extensions'], ['generation', 'Generation'], ['settings', 'Settings']];
+
+    const mx = { built: false, view: 'chat', tab: 'gallery', limit: 60, search: '', stick: true, gen: false };
+    const mxNodes = new Map();
+    const rp = () => {
+        const s = settings();
+        if (!s.rp || typeof s.rp !== 'object') s.rp = {};
+        if (!s.rp.notes || typeof s.rp.notes !== 'object') s.rp.notes = {};
+        if (!s.rp.lore || typeof s.rp.lore !== 'object') s.rp.lore = {};
+        return s.rp;
+    };
+
+    // ----- ST data helpers -----
+    function curChar() {
+        const c = ctx();
+        if (c.groupId || c.characterId === undefined || c.characterId === null) return null;
+        return (c.characters && c.characters[c.characterId]) || null;
+    }
+    function charKey() {
+        const ch = curChar();
+        if (ch) return String(ch.avatar || ch.name || '');
+        const c = ctx();
+        return c.groupId ? 'group_' + c.groupId : '';
+    }
+    const subst = (t, ch) => String(t || '').replace(/\{\{char\}\}/gi, (ch && ch.name) || '').replace(/\{\{user\}\}/gi, ctx().name1 || 'You');
+    function firstLine(t, max) {
+        const l = String(t || '').replace(/[*_`#>]/g, '').split(/\n/).map((x) => x.trim()).find(Boolean) || '';
+        return l.length > max ? l.slice(0, max - 1) + '…' : l;
+    }
+    const tagline = (ch) => firstLine(subst(ch.creatorcomment, ch), 70) || firstLine(subst(ch.personality, ch), 70) || firstLine(subst(ch.description, ch), 70);
+    function quoteOf(ch) {
+        const t = subst(ch.first_mes, ch);
+        const m = t.match(/[“"]([^”"\n]{12,140})[”"]/);
+        return m ? '“' + m[1] + '”' : firstLine(t, 110);
+    }
+    function mxUserAv() {
+        const c = ctx();
+        let f = c.user_avatar || c.userAvatar;
+        if (!f) { const sel = document.querySelector('#user_avatar_block .avatar.selected'); f = sel && sel.getAttribute('imgfile'); }
+        return f ? `/thumbnail?type=persona&file=${encodeURIComponent(f)}` : '';
+    }
+    function mxTime(v) {
+        if (!v) return '';
+        const d = new Date(v);
+        if (!isNaN(d)) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        if (typeof v === 'string') {
+            const m = v.match(/(\d{1,2}):(\d{2})\s*([ap]m)?/i);
+            if (m) return `${+m[1]}:${m[2]}` + (m[3] ? ' ' + m[3].toUpperCase() : '');
+        }
+        return '';
+    }
+    function stOpen(sel) {
+        const holder = document.querySelector(sel);
+        const tog = holder && holder.querySelector('.drawer-toggle');
+        if (!tog) { toast('That SillyTavern panel was not found'); return; }
+        exitBrowserFs();
+        $id('cw_window').classList.add('cw_away');
+        $id('cw_pill').classList.add('cw_show');
+        setTimeout(() => {
+            const content = holder.querySelector('.drawer-content');
+            if (!(content && content.classList.contains('openDrawer'))) tog.click();
+        }, 150);
+    }
+    function backToWindow() {
+        $id('cw_window').classList.remove('cw_away');
+        $id('cw_pill').classList.remove('cw_show');
+        if (settings().fullscreen) enterBrowserFs();
+        setTimeout(() => { setVh(); if (mxActive()) mxAll(); }, 200);
+    }
+    const stClick = (id, label) => { const el = $id(id); if (el) el.click(); else toast((label || id) + ' is not available'); };
+
+    // ----- gallery storage (IndexedDB, so settings.json stays small) -----
+    const gdb = (() => {
+        let p = null;
+        const open = () => p || (p = new Promise((res, rej) => {
+            const r = indexedDB.open('code_window_gallery', 1);
+            r.onupgradeneeded = () => { const st = r.result.createObjectStore('img', { keyPath: 'id', autoIncrement: true }); st.createIndex('char', 'char'); };
+            r.onsuccess = () => res(r.result);
+            r.onerror = () => rej(r.error);
+        }));
+        const tx = (mode, fn) => open().then((db) => new Promise((res, rej) => {
+            const t = db.transaction('img', mode);
+            const req = fn(t.objectStore('img'));
+            t.oncomplete = () => res(req && req.result);
+            t.onerror = () => rej(t.error);
+        }));
+        return {
+            add: (char, blob) => tx('readwrite', (st) => st.add({ char, blob, ts: Date.now() })),
+            list: (char) => tx('readonly', (st) => st.index('char').getAll(char)),
+            del: (id) => tx('readwrite', (st) => st.delete(id)),
+        };
+    })();
+    async function shrinkImage(file) {
+        const bmp = await createImageBitmap(file);
+        const k = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(bmp.width * k)); cv.height = Math.max(1, Math.round(bmp.height * k));
+        const g = cv.getContext('2d');
+        g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
+        g.drawImage(bmp, 0, 0, cv.width, cv.height);
+        return new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.86));
+    }
+    let galUrls = [];
+
+    // ----- build -----
+    function mxBuild() {
+        if (mx.built) return;
+        const host = $id('cw_modern');
+        host.innerHTML = `
+<div class="mx" id="mx">
+  <div class="mx_bg" id="mx_bg"></div>
+  <aside class="mx_left" id="mx_left">
+    <div class="mx_logo">${IC.logo}<span>SillyTavern</span></div>
+    <nav class="mx_nav" id="mx_nav">${NAV.map(([id, label]) => `<button class="mx_navb" data-nav="${id}">${IC[id]}<span>${label}</span>${id === 'chat' ? IC.chev : ''}</button>`).join('')}</nav>
+  </aside>
+  <main class="mx_mid">
+    <header class="mx_head">
+      <button class="mx_ib mx_burger" id="mx_burger" title="Menu">${IC.menu}</button>
+      <div class="mx_who" id="mx_who">
+        <img class="mx_hav" id="mx_h_av" alt="">
+        <div class="mx_wt"><div class="mx_hn"><span id="mx_h_name"></span><span class="mx_heart">&#9829;</span><span class="mx_sp">&#10022;</span></div><div class="mx_htag"><span id="mx_h_tag"></span> <span class="mx_heart">&#9829;</span></div></div>
+      </div>
+      <div class="mx_hicons">
+        <button class="mx_ib" id="mx_b_search" title="Search messages">${IC.search}</button>
+        <button class="mx_ib" id="mx_b_img" title="Add pictures to the gallery">${IC.image}</button>
+        <button class="mx_ib" id="mx_b_more" data-menu title="More">${IC.dots}</button>
+      </div>
+    </header>
+    <div class="mx_sbar" id="mx_sbar" hidden><input id="mx_sin" placeholder="Search messages..." autocomplete="off"><button class="mx_ib" id="mx_sx">&#10005;</button></div>
+    <section class="mx_chatview" id="mx_chatview"><div class="mx_scroll" id="mx_scroll">
+      <button class="mx_more" id="mx_more" hidden>Load earlier messages</button>
+      <div class="mx_msgs" id="mx_msgs"></div>
+      <div class="mx_row mx_char" id="mx_typing" hidden><div class="mx_bub"><div class="mx_dots"><i></i><i></i><i></i></div></div></div>
+    </div></section>
+    <section class="mx_charview" id="mx_charview" hidden><div class="mx_cvh">Characters</div><div class="mx_grid" id="mx_grid"></div></section>
+    <footer class="mx_comp" id="mx_comp">
+      <button class="mx_plus" id="mx_b_plus" data-menu title="Actions">${IC.plus}</button>
+      <textarea id="mx_in" rows="1" placeholder="Type a message..." spellcheck="true"></textarea>
+      <button class="mx_ib" id="mx_b_spark" title="Impersonate">${IC.spark}</button>
+      <button class="mx_ib" id="mx_b_img2" title="Add pictures to the gallery">${IC.image}</button>
+      <button class="mx_ib" id="mx_b_mic" title="Voice input">${IC.mic}</button>
+      <button class="mx_send" id="mx_send" title="Send">${IC.send}</button>
+    </footer>
+  </main>
+  <aside class="mx_right" id="mx_right">
+    <div class="mx_hero"><img id="mx_hero_img" alt=""><div class="mx_hero_fade"></div>
+      <div class="mx_hero_txt"><div class="mx_hero_name"><span id="mx_r_name"></span><span class="mx_heart">&#9829;</span></div><div class="mx_hero_quote" id="mx_r_quote"></div></div></div>
+    <div class="mx_tabs" id="mx_tabs"><button data-tab="gallery">Gallery</button><button data-tab="info">Info</button><button data-tab="notes">Notes</button><button data-tab="lore">Lore</button></div>
+    <div class="mx_tabbody" id="mx_tabbody"></div>
+  </aside>
+  <div class="mx_scrim" id="mx_scrim"></div>
+  <div class="mx_menu" id="mx_menu" hidden></div>
+  <div class="mx_lb" id="mx_lb" hidden><img id="mx_lb_img" alt=""><div class="mx_lb_bar"><button id="mx_lb_del">Delete</button><button id="mx_lb_x">Close</button></div></div>
+  <input type="file" id="mx_file" accept="image/*" multiple hidden>
+</div>`;
+        const root = $id('mx');
+        $id('mx_nav').onclick = (e) => { const b = e.target.closest('[data-nav]'); if (b) mxNav(b.dataset.nav); };
+        $id('mx_tabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) mxTab(b.dataset.tab); };
+        $id('mx_burger').onclick = () => root.classList.toggle('mx_l_open');
+        $id('mx_who').onclick = () => root.classList.toggle('mx_r_open');
+        $id('mx_scrim').onclick = () => root.classList.remove('mx_l_open', 'mx_r_open');
+        $id('mx_b_search').onclick = () => {
+            const sb = $id('mx_sbar'); sb.hidden = !sb.hidden;
+            if (!sb.hidden) $id('mx_sin').focus(); else { mx.search = ''; $id('mx_sin').value = ''; mxRender(); }
+        };
+        $id('mx_sx').onclick = () => { $id('mx_sbar').hidden = true; mx.search = ''; $id('mx_sin').value = ''; mxRender(); };
+        $id('mx_sin').oninput = (e) => { mx.search = e.target.value.trim().toLowerCase(); mxRender(); };
+        const pickImg = () => { mxTab('gallery'); root.classList.add('mx_r_open'); $id('mx_file').click(); };
+        $id('mx_b_img').onclick = pickImg;
+        $id('mx_b_img2').onclick = pickImg;
+        $id('mx_file').onchange = async (e) => { const f = [...e.target.files]; e.target.value = ''; await mxAddImages(f); };
+        $id('mx_b_more').onclick = () => mxMenu('top', [
+            ['Scroll to latest', () => mxScroll(true)],
+            ['Regenerate last reply', () => stClick('option_regenerate', 'Regenerate')],
+            ['Open code editor', () => setMode('code')],
+            [$id('cw_window').classList.contains('cw_full') ? 'Exit full screen' : 'Full screen', () => setFullscreen(!$id('cw_window').classList.contains('cw_full'))],
+            ['Close Code Window', closeWindow],
+        ]);
+        $id('mx_b_plus').onclick = () => mxMenu('bottom', [
+            ['Regenerate', () => stClick('option_regenerate', 'Regenerate')],
+            ['Continue', () => stClick('option_continue', 'Continue')],
+            ['Impersonate', () => stClick('option_impersonate', 'Impersonate')],
+            ['Stop generating', () => stClick('mes_stop', 'Stop')],
+        ]);
+        $id('mx_b_spark').onclick = () => stClick('option_impersonate', 'Impersonate');
+        $id('mx_b_mic').onclick = () => { const m = $id('microphone_button'); if (m) m.click(); else toast('Enable the Speech Recognition extension in SillyTavern to use the microphone'); };
+        $id('mx_send').onclick = mxSend;
+        const ta = $id('mx_in');
+        ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 130) + 'px'; };
+        ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); mxSend(); } };
+        $id('mx_more').onclick = () => { mx.limit += 60; mxRender(); };
+        $id('mx_scroll').onscroll = (e) => { const s = e.target; mx.stick = s.scrollHeight - s.scrollTop - s.clientHeight < 160; };
+        root.addEventListener('click', (e) => { if (!e.target.closest('#mx_menu') && !e.target.closest('[data-menu]')) $id('mx_menu').hidden = true; });
+        $id('mx_lb').onclick = (e) => { if (e.target.id === 'mx_lb') $id('mx_lb').hidden = true; };
+        $id('mx_lb_x').onclick = () => { $id('mx_lb').hidden = true; };
+        mx.built = true;
+    }
+    function mxMenu(where, items) {
+        const m = $id('mx_menu');
+        if (!m.hidden && m.dataset.where === where) { m.hidden = true; return; }
+        m.textContent = '';
+        items.forEach(([label, fn]) => {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.onclick = () => { m.hidden = true; fn(); };
+            m.appendChild(b);
+        });
+        m.dataset.where = where;
+        m.className = 'mx_menu mx_menu_' + where;
+        m.hidden = false;
+    }
+    function mxSend() {
+        const st = $id('send_textarea');
+        if (!st) { toast('SillyTavern chat box not found'); return; }
+        if (isGenerating()) { $id('mes_stop')?.click(); return; }
+        const ta = $id('mx_in');
+        st.value = ta.value.trim();
+        st.dispatchEvent(new Event('input', { bubbles: true }));
+        $id('send_but')?.click();
+        ta.value = ''; ta.style.height = 'auto';
+        mx.stick = true;
+        setTimeout(() => mxScroll(true), 150);
+    }
+    function mxScroll(force) { const s = $id('mx_scroll'); if (s && (force || mx.stick)) s.scrollTop = s.scrollHeight; }
+    function mxActive() {
+        const w = $id('cw_window'), s = settings();
+        return mx.built && w && w.classList.contains('cw_open') && !w.classList.contains('cw_away') && s.theme === 'modern' && s.mode === 'run';
+    }
+
+    // ----- navigation -----
+    function mxNav(id) {
+        $id('mx').classList.remove('mx_l_open');
+        if (id === 'chat' || id === 'characters') { mxView(id); return; }
+        if (id === 'lorebook' || id === 'worldinfo') stOpen('#WI-SP-button');
+        else if (id === 'extensions') stOpen('#extensions-settings-button');
+        else if (id === 'generation') stOpen('#ai-config-button');
+        else if (id === 'settings') openSettings();
+    }
+    function mxView(v) {
+        mx.view = v;
+        $id('mx_chatview').hidden = v !== 'chat';
+        $id('mx_charview').hidden = v !== 'characters';
+        $id('mx_comp').hidden = v !== 'chat';
+        document.querySelectorAll('#mx_nav .mx_navb').forEach((b) => b.classList.toggle('mx_on', b.dataset.nav === v));
+        if (v === 'characters') mxCharacters(); else setTimeout(() => mxScroll(true), 30);
+    }
+    function mxCharacters() {
+        const c = ctx(), grid = $id('mx_grid');
+        grid.textContent = '';
+        (c.characters || []).forEach((ch, idx) => {
+            const b = document.createElement('button');
+            b.className = 'mx_card' + (!c.groupId && String(c.characterId) === String(idx) ? ' mx_on' : '');
+            const img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = mxThumb(ch.avatar);
+            const nm = document.createElement('div'); nm.className = 'mx_cn'; nm.textContent = ch.name || '';
+            const tg = document.createElement('div'); tg.className = 'mx_ct'; tg.textContent = tagline(ch);
+            b.append(img, nm, tg);
+            b.onclick = () => mxPick(idx);
+            grid.appendChild(b);
+        });
+        if (!grid.children.length) grid.textContent = 'No characters found.';
+    }
+    async function mxPick(idx) {
+        const c = ctx();
+        try {
+            if (typeof c.selectCharacterById === 'function') await c.selectCharacterById(String(idx), { switchMenu: false });
+            else if (window.$) window.$(`#rm_print_characters_block .character_select[chid="${idx}"]`).first().trigger('click');
+        } catch (e) { console.warn('[Code Window] select character failed', e); toast('Could not open that character'); }
+        mxView('chat');
+        setTimeout(() => mxReset(), 400);
+    }
+
+    // ----- chat -----
+    function mxFill(el, m) {
+        const user = !!m.is_user;
+        el.className = 'mx_row ' + (user ? 'mx_user' : 'mx_char');
+        const ch = curChar();
+        const av = m.force_avatar || (user ? mxUserAv() : (m.original_avatar ? mxThumb(m.original_avatar) : (ch ? mxThumb(ch.avatar) : '')));
+        const paras = String(m.mes || '').split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${mxFmt(p)}</p>`).join('') || '<p class="mx_dim">...</p>';
+        el.innerHTML = `<div class="mx_bub"><img class="mx_ava" alt="" src="${mxEsc(av)}"><div class="mx_main"><div class="mx_meta"><span class="mx_nm">${mxEsc(user ? 'You' : (m.name || ''))}</span>${user ? '' : '<span class="mx_heart">&#9829;</span>'}<span class="mx_time">${mxEsc(mxTime(m.send_date))}</span></div><div class="mx_body">${paras}</div></div></div>`;
+        const img = el.querySelector('img');
+        if (!av) img.style.visibility = 'hidden';
+        img.onerror = () => { img.style.visibility = 'hidden'; };
+    }
+    function mxRender() {
+        if (!mx.built) return;
+        const c = ctx(), list = $id('mx_msgs');
+        const items = [];
+        (c.chat || []).forEach((m, i) => { if (m && !m.is_system) items.push([i, m]); });
+        const start = Math.max(0, items.length - mx.limit);
+        const shown = items.slice(start);
+        $id('mx_more').hidden = start <= 0;
+        const keep = new Set(shown.map((x) => x[0]));
+        for (const [i, el] of mxNodes) if (!keep.has(i)) { el.remove(); mxNodes.delete(i); }
+        let prev = null;
+        for (const [i, m] of shown) {
+            let el = mxNodes.get(i);
+            if (!el) { el = document.createElement('div'); mxNodes.set(i, el); }
+            const sig = `${m.is_user ? 1 : 0}|${m.name}|${m.swipe_id || 0}|${m.mes}|${m.force_avatar || ''}`;
+            if (el._sig !== sig) { mxFill(el, m); el._sig = sig; }
+            el.classList.toggle('mx_hide', !!mx.search && !String(m.mes || '').toLowerCase().includes(mx.search));
+            const want = prev ? prev.nextSibling : list.firstChild;
+            if (el !== want) list.insertBefore(el, want);
+            prev = el;
+        }
+        mxTyping();
+        mxScroll(false);
+    }
+    function mxTyping() {
+        const items = (ctx().chat || []).filter((m) => m && !m.is_system);
+        const last = items[items.length - 1];
+        const t = $id('mx_typing');
+        if (t) t.hidden = !(mx.gen && last && last.is_user);
+        const sb = $id('mx_send');
+        if (sb) { sb.innerHTML = mx.gen ? IC.stop : IC.send; sb.classList.toggle('mx_stop', mx.gen); sb.title = mx.gen ? 'Stop' : 'Send'; }
+    }
+    function mxGenTick() {
+        if (!mxActive()) return;
+        const g = isGenerating();
+        if (g !== mx.gen) { mx.gen = g; mxTyping(); mxScroll(false); }
+    }
+    let mxTimer = 0;
+    function mxSoon() {
+        if (!mxActive() || mxTimer) return;
+        mxTimer = setTimeout(() => { mxTimer = 0; mxRender(); }, 120);
+    }
+    function mxReset() {
+        if (!mx.built) return;
+        mxNodes.clear(); $id('mx_msgs').textContent = '';
+        mx.limit = 60; mx.stick = true;
+        mxAll();
+        setTimeout(() => mxScroll(true), 60);
+    }
+
+    // ----- header / right panel -----
+    function mxBg() {
+        let img = 'none';
+        try {
+            const a = document.getElementById('bg_custom'), b = document.getElementById('bg1');
+            const ia = a ? getComputedStyle(a).backgroundImage : 'none', ib = b ? getComputedStyle(b).backgroundImage : 'none';
+            img = ia && ia !== 'none' ? ia : ib;
+        } catch { /* ignore */ }
+        $id('mx_bg').style.backgroundImage = img && img !== 'none' ? img : 'radial-gradient(120% 90% at 30% 20%, #3a1f2b 0%, #160d12 55%, #0b0709 100%)';
+    }
+    function mxHeader() {
+        const c = ctx(), ch = curChar();
+        let name = 'SillyTavern', tag = '', av = '', quote = '', hero = '';
+        if (ch) { name = ch.name; tag = tagline(ch); av = mxThumb(ch.avatar); hero = mxFull(ch.avatar); quote = quoteOf(ch); }
+        else if (c.groupId) { const g = (c.groups || []).find((x) => String(x.id) === String(c.groupId)); name = (g && g.name) || 'Group chat'; tag = 'Group chat'; }
+        else tag = 'Pick a character to begin';
+        $id('mx_h_name').textContent = name;
+        $id('mx_h_tag').textContent = tag;
+        $id('mx_r_name').textContent = name;
+        $id('mx_r_quote').textContent = quote;
+        const h = $id('mx_h_av'); h.style.visibility = av ? '' : 'hidden'; h.src = av || '';
+        const r = $id('mx_hero_img'); r.style.visibility = hero ? '' : 'hidden'; r.src = hero || '';
+        r.onerror = () => { r.src = av; };
+    }
+    function mxAll() {
+        if (!mx.built) return;
+        mxBg(); mxHeader(); mxTab(mx.tab); mxRender();
+        if (mx.view === 'characters') mxCharacters();
+    }
+    function mxShow() { mxBuild(); mxView(mx.view); mxAll(); setTimeout(() => mxScroll(true), 80); }
+
+    function mxTab(name) {
+        mx.tab = name;
+        document.querySelectorAll('#mx_tabs button').forEach((b) => b.classList.toggle('mx_on', b.dataset.tab === name));
+        const body = $id('mx_tabbody');
+        body.textContent = '';
+        if (name === 'gallery') mxGallery(body);
+        else if (name === 'info') mxInfo(body);
+        else if (name === 'notes') mxNotes(body);
+        else mxLore(body);
+    }
+    async function mxGallery(body) {
+        galUrls.forEach((u) => URL.revokeObjectURL(u)); galUrls = [];
+        const key = charKey();
+        const grid = document.createElement('div'); grid.className = 'mx_gal';
+        body.appendChild(grid);
+        let items = [];
+        try { items = key ? await gdb.list(key) : []; } catch (e) { console.warn('[Code Window] gallery read failed', e); }
+        if (mx.tab !== 'gallery' || key !== charKey()) return;
+        items.sort((a, b) => b.ts - a.ts).forEach((it) => {
+            const url = URL.createObjectURL(it.blob); galUrls.push(url);
+            const im = document.createElement('img'); im.className = 'mx_tile'; im.src = url; im.alt = '';
+            im.onclick = () => {
+                $id('mx_lb_img').src = url; $id('mx_lb').hidden = false;
+                $id('mx_lb_del').onclick = async () => { $id('mx_lb').hidden = true; try { await gdb.del(it.id); } catch { /* ignore */ } mxTab('gallery'); };
+            };
+            grid.appendChild(im);
+        });
+        const add = document.createElement('button'); add.className = 'mx_tile mx_addtile'; add.innerHTML = IC.image + '<span>Add</span>';
+        add.onclick = () => $id('mx_file').click();
+        grid.appendChild(add);
+    }
+    async function mxAddImages(files) {
+        const key = charKey();
+        if (!key) { toast('Select a character first'); return; }
+        let have = 0;
+        try { have = (await gdb.list(key)).length; } catch { /* ignore */ }
+        let added = 0;
+        for (const f of files.slice(0, 20)) {
+            if (!/^image\//.test(f.type)) continue;
+            if (have + added >= 60) { toast('Gallery limit reached (60 pictures)'); break; }
+            try { const blob = await shrinkImage(f); await gdb.add(key, blob); added++; } catch (e) { console.warn('[Code Window] image add failed', e); }
+        }
+        if (added) toast(`Added ${added} picture${added > 1 ? 's' : ''}`);
+        mxTab('gallery');
+    }
+    function mxInfo(body) {
+        const ch = curChar();
+        if (!ch) { body.textContent = 'No character selected.'; return; }
+        const secs = [['Description', ch.description], ['Personality', ch.personality], ['Scenario', ch.scenario], ['First message', ch.first_mes], ['Example dialogue', ch.mes_example], ['Creator notes', ch.creatorcomment]];
+        let n = 0;
+        for (const [title, text] of secs) {
+            const t = subst(text, ch).trim();
+            if (!t) continue;
+            n++;
+            const d = document.createElement('div'); d.className = 'mx_sec';
+            d.innerHTML = `<div class="mx_sh">${mxEsc(title)}</div><div class="mx_st">${mxHtml(t)}</div>`;
+            body.appendChild(d);
+        }
+        const tags = Array.isArray(ch.tags) ? ch.tags : [];
+        if (tags.length) { const d = document.createElement('div'); d.className = 'mx_chips'; d.innerHTML = tags.map((t) => `<span>${mxEsc(t)}</span>`).join(''); body.appendChild(d); n++; }
+        const by = ch.data && ch.data.creator;
+        if (by) { const d = document.createElement('div'); d.className = 'mx_by'; d.textContent = 'Created by ' + by; body.appendChild(d); }
+        if (!n) body.textContent = 'This card has no details.';
+    }
+    function mxNotes(body) {
+        const key = charKey();
+        if (!key) { body.textContent = 'Select a character to keep notes.'; return; }
+        const ta = document.createElement('textarea'); ta.className = 'mx_note';
+        ta.placeholder = 'Your private RP notes (plot threads, promises, reminders...). Never sent to the AI.';
+        ta.maxLength = 20000; ta.value = rp().notes[key] || '';
+        ta.oninput = () => { rp().notes[key] = ta.value; save(); };
+        body.appendChild(ta);
+    }
+    const clampInt = (v, lo, hi, d) => { v = parseInt(v, 10); return isNaN(v) ? d : Math.min(hi, Math.max(lo, v)); };
+    function applyLore() {
+        try {
+            const c = ctx();
+            if (typeof c.setExtensionPrompt !== 'function') return;
+            const key = charKey(), e = (key && rp().lore[key]) || {};
+            const text = String(e.text || '').trim();
+            const role = [0, 1, 2].includes(Number(e.role)) ? Number(e.role) : 0;
+            c.setExtensionPrompt(MODULE + '_lore', text, 1, clampInt(e.depth, 0, 200, 4), false, role);
+        } catch (err) { console.warn('[Code Window] lore inject failed', err); }
+    }
+    function mxLore(body) {
+        const key = charKey();
+        if (!key) { body.textContent = 'Select a character to write a lore summary.'; return; }
+        const e = rp().lore[key] || (rp().lore[key] = { text: '', depth: 4, role: 0 });
+        body.innerHTML = `<textarea class="mx_note" maxlength="20000" placeholder="Write a summary of the story so far / world facts the AI must remember. It is sent with every request."></textarea>
+<div class="mx_lrow"><label>Depth <input type="number" min="0" max="200" class="mx_depth"></label><label>Role <select class="mx_role"><option value="0">System</option><option value="1">User</option><option value="2">Assistant</option></select></label><span class="mx_lstat"></span></div>
+<div class="mx_hint">Depth 0 = right after the newest message, 4 = four messages back. Leave empty to turn it off.</div>`;
+        const ta = body.querySelector('textarea'), dp = body.querySelector('.mx_depth'), rl = body.querySelector('.mx_role'), st = body.querySelector('.mx_lstat');
+        ta.value = e.text || ''; dp.value = clampInt(e.depth, 0, 200, 4); rl.value = String(e.role || 0);
+        const stat = () => { st.textContent = ta.value.trim() ? '● active' : 'off'; st.className = 'mx_lstat' + (ta.value.trim() ? ' mx_live' : ''); };
+        let t = 0;
+        const upd = () => {
+            e.text = ta.value; e.depth = clampInt(dp.value, 0, 200, 4); e.role = Number(rl.value) || 0;
+            save(); stat(); clearTimeout(t); t = setTimeout(applyLore, 350);
+        };
+        ta.oninput = upd; dp.oninput = upd; rl.onchange = upd;
+        stat();
+    }
+
+    // ----- hooks -----
+    function mxHooks() {
+        const { eventSource, eventTypes: T } = ctx();
+        const on = (t, fn) => t && eventSource.on(t, fn);
+        [T.CHARACTER_MESSAGE_RENDERED, T.USER_MESSAGE_RENDERED, T.MESSAGE_UPDATED, T.MESSAGE_SWIPED, T.MESSAGE_DELETED,
+         T.MESSAGE_RECEIVED, T.GENERATION_STARTED, T.GENERATION_ENDED, T.GENERATION_STOPPED, T.STREAM_TOKEN_RECEIVED]
+            .forEach((t) => on(t, mxSoon));
+        on(T.CHAT_CHANGED, () => setTimeout(() => { applyLore(); if (mxActive()) mxReset(); }, 200));
+        on(T.APP_READY, () => setTimeout(applyLore, 300));
+        setTimeout(applyLore, 2500);
+        setInterval(mxGenTick, 500);
+    }
+
     jQuery(() => {
         createWindow();
         addMenuButton();
+        mxHooks();
         const { eventSource, eventTypes: T } = ctx();
         const refresh = () => setTimeout(() => { decorateMessages(); pushState(); }, 150);
         [T.CHARACTER_MESSAGE_RENDERED, T.USER_MESSAGE_RENDERED, T.MESSAGE_UPDATED,
