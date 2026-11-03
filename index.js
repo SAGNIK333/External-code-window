@@ -1,4 +1,5 @@
-// Code Window v1.10.1 - SillyTavern extension
+// Code Window v1.11 - SillyTavern extension
+// v1.11: "Memory graph" button (header, run-mode float, Modern menus) opens the RP Memory Graph viewer inside the window.
 // v1.10.1: fix - messages now go through SillyTavern's own Regex extension ("Alter Chat Display" scripts) before they are shown
 //         in the Modern style and sent to the rendered page (ST.state, ST.format); raw text stays available as .raw.
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
@@ -24,6 +25,7 @@
     // Loaded lazily from ST itself; if it can't be loaded the raw message text is used (old behaviour).
     let rx = null, rxVer = 0, rxWarned = false, rxErr = '';
     function cwBadge(text, bad) {
+        if (!bad) { console.log('[Code Window]', text); return; }   // success only goes to the console; failures show a red badge
         try {
             let b = document.getElementById('cw_badge');
             if (!b) {
@@ -884,11 +886,13 @@ ST.onUpdate(function (s) {
     <span id="cw_mode">
       <span class="cw_seg" id="cw_m_code" title="Edit code">&lt;/&gt; Code</span><span class="cw_seg" id="cw_m_run" title="Run the project (click again to re-run)">&#9654; Run Code</span>
     </span>
+    <span class="cw_btn" id="cw_btn_graph" title="Memory graph (RP Memory Graph extension)">&#128376;</span>
     <span class="cw_btn" id="cw_btn_set" title="Text colours (dialogue, italic, bold, brackets)">&#9881;</span>
     <span class="cw_btn" id="cw_btn_max" title="Full screen on/off">&#9974;</span>
     <span class="cw_btn" id="cw_btn_close" title="Close">&#10005;</span>
   </div>
   <div id="cw_float">
+    <span class="cw_btn" id="cw_f_graph" title="Memory graph">&#128376;</span>
     <span class="cw_btn" id="cw_f_set" title="Text colours">&#9881;</span>
     <span class="cw_btn" id="cw_f_code" title="Back to code">&lt;/&gt; Code</span>
     <span class="cw_btn" id="cw_f_exit" title="Exit full screen">&#9974;</span>
@@ -967,6 +971,8 @@ ST.onUpdate(function (s) {
         $id('cw_btn_max').onclick = () => setFullscreen(!w.classList.contains('cw_full'));
         $id('cw_f_exit').onclick = () => setFullscreen(false);
         $id('cw_btn_set').onclick = openSettings;
+        $id('cw_btn_graph').onclick = openMemGraph;
+        $id('cw_f_graph').onclick = openMemGraph;
         $id('cw_f_set').onclick = openSettings;
         $id('cw_set_back').onclick = closeSettings;
         $id('cw_pill').onclick = backToWindow;
@@ -1112,6 +1118,15 @@ ST.onUpdate(function (s) {
     const mxEsc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const mxFmt = makeFmt().fmt;
     const mxHtml = (t) => mxFmt(t == null ? '' : t).replace(/\r?\n/g, '<br>');
+    // Opens the RP Memory Graph viewer (separate extension). It mounts inside our fullscreen element so it shows over the window.
+    function openMemGraph() {
+        const api = window.rpMemoryGraph;
+        if (api && typeof api.open === 'function') {
+            try { api.open(); } catch (e) { toast('Memory graph: ' + (e && e.message || e)); }
+        } else {
+            toast('RP Memory Graph not found. Install/enable it and update it to v0.1.1, then reload.');
+        }
+    }
     const toast = (m) => { try { if (window.toastr) window.toastr.info(m); else console.log('[Code Window]', m); } catch { /* ignore */ } };
     const mxThumb = (f) => `/thumbnail?type=avatar&file=${encodeURIComponent(f)}`;
     const mxFull = (f) => `/characters/${encodeURIComponent(f)}`;
@@ -1323,12 +1338,14 @@ ST.onUpdate(function (s) {
         $id('mx_b_more').onclick = () => mxMenu('top', [
             ['Scroll to latest', () => mxScroll(true)],
             ['Regenerate last reply', mxRegen],
+            ['Memory graph', openMemGraph],
             ['Open code editor', () => setMode('code')],
             [$id('cw_window').classList.contains('cw_full') ? 'Exit full screen' : 'Full screen', () => setFullscreen(!$id('cw_window').classList.contains('cw_full'))],
             ['Close Code Window', closeWindow],
         ]);
         $id('mx_b_plus').onclick = () => mxMenu('bottom', [
             ['Search messages', () => $id('mx_b_search').click()],
+            ['Memory graph', openMemGraph],
             ['Scroll to latest', () => mxScroll(true)],
             ['Regenerate (keeps old versions)', mxRegen],
             ['Continue', () => stClick('option_continue', 'Continue')],
