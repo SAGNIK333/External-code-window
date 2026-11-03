@@ -1,4 +1,6 @@
-// Code Window v1.10 - SillyTavern extension
+// Code Window v1.10.1 - SillyTavern extension
+// v1.10.1: fix - messages now go through SillyTavern's own Regex extension ("Alter Chat Display" scripts) before they are shown
+//         in the Modern style and sent to the rendered page (ST.state, ST.format); raw text stays available as .raw.
 // Floating, draggable, resizable popup that renders HTML/CSS/JS in a locked-down sandboxed iframe.
 // v1.10: Modern style only in full screen (small window = classic code window, always opens small); faster typing.
 // v1.9: edit any message (AI + user), swipe versions kept on regenerate (< 2/3 >), right-panel picture follows the turns (Gallery).
@@ -17,6 +19,49 @@
     const MAX_FILE = 1000000, MAX_TOTAL = 3000000, MAX_FILES = 40;
     const ctx = () => SillyTavern.getContext();
     const $id = (id) => document.getElementById(id);
+
+    // ---------- SillyTavern Regex extension (display scripts) ----------
+    // Loaded lazily from ST itself; if it can't be loaded the raw message text is used (old behaviour).
+    let rx = null, rxVer = 0, rxWarned = false, rxErr = '';
+    function cwBadge(text, bad) {
+        try {
+            let b = document.getElementById('cw_badge');
+            if (!b) {
+                b = document.createElement('div'); b.id = 'cw_badge';
+                b.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483647;padding:6px 10px;border-radius:8px;font:12px/1.3 sans-serif;color:#fff;max-width:80vw;pointer-events:none;';
+                (document.body || document.documentElement).appendChild(b);
+            }
+            b.style.background = bad ? '#b3261e' : '#1b6e3c';
+            b.textContent = text;
+            clearTimeout(b._t); b._t = setTimeout(() => b.remove(), 12000);
+        } catch (e) { /* ignore */ }
+    }
+    cwBadge('Code Window v1.10.1 loaded - checking ST regex...');
+    (async () => {
+        for (const p of ['/scripts/extensions/regex/engine.js', '/scripts/extensions/regex/index.js']) {
+            try {
+                const mod = await import(p);
+                if (typeof mod.getRegexedString === 'function' && mod.regex_placement) { rx = mod; break; }
+            } catch (e) { rxErr = String(e && e.message || e).slice(0, 80); }
+        }
+        if (!rx) { console.warn('[Code Window] ST regex engine not found - showing raw messages'); cwBadge('Code Window v1.10.1: ST regex engine NOT found (' + (rxErr || 'unknown') + ')', true); return; }
+        rxVer++;
+        cwBadge('Code Window v1.10.1: ST regex engine loaded OK');
+        setTimeout(() => { try { pushState(); if (mx.built) mxReset(); } catch (e) { /* UI not ready yet */ } }, 0);
+    })();
+    function shownText(m) {
+        if (!m) return '';
+        const raw = String((m.extra && m.extra.display_text) || m.mes || '');
+        if (!rx) return raw;
+        try {
+            const chat = ctx().chat || [];
+            const i = chat.indexOf(m);
+            const place = m.is_user ? rx.regex_placement.USER_INPUT : rx.regex_placement.AI_OUTPUT;
+            const out = rx.getRegexedString(raw, place, { isMarkdown: true, depth: i < 0 ? undefined : chat.length - i - 1 });
+            if (!rxWarned && out === raw && /<\/?[a-z][^>]*>/i.test(String(m.extra && m.extra.display_text || '')) === false) { rxWarned = true; console.log('[Code Window] regex ran but changed nothing for a message (no matching "Alter Chat Display" script?)'); }
+            return typeof out === 'string' ? out : raw;
+        } catch (e) { console.warn('[Code Window] regex failed', e); return raw; }
+    }
 
     const defaults = Object.freeze({
         left: null, top: null, width: 720, height: 600,
@@ -205,7 +250,34 @@ ST.onUpdate(function (s) {
         var RE2 = new RegExp('\\*\\*' + INNER + '\\*\\*', 'g');
         var RE1 = new RegExp('\\*' + INNER + '\\*', 'g');
         var RES = /~~([^~\s](?:[^~]*?[^~\s])?)~~/g;
-        function fmt(text) {
+        // Tags produced by ST regex scripts (e.g. <span style="color:..">) are kept, but only a small whitelist of
+        // inline tags, rebuilt from scratch with only style/class/color attributes. Everything else is escaped as before.
+        var OKTAG = /^(span|b|i|em|strong|u|s|del|mark|small|sub|sup|font|br)$/;
+        function cleanTag(t) {
+            var m = /^<(\/?)([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>$/.exec(t);
+            if (!m) return null;
+            var name = m[2].toLowerCase();
+            if (!OKTAG.test(name)) return null;
+            if (m[1]) return '</' + name + '>';
+            var out = '<' + name, re = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g, a;
+            while ((a = re.exec(m[3]))) {
+                var k = a[1].toLowerCase(), v = a[2] != null ? a[2] : a[3];
+                if (k === 'style') { if (/url\s*\(|expression|javascript|@import|position|z-index|[<>]/i.test(v)) continue; }
+                else if (k !== 'class' && k !== 'color') continue;
+                out += ' ' + k + '="' + v.replace(/"/g, '&quot;') + '"';
+            }
+            return out + '>';
+        }
+        function fmt(text, allowTags) {
+            var tags = [];
+            if (allowTags) {
+                text = String(text).replace(/\u0001/g, '').replace(/<\/?[a-zA-Z][a-zA-Z0-9]*[^<>]*>/g, function (t) {
+                    var c = cleanTag(t);
+                    if (c == null) return t;
+                    tags.push(c);
+                    return '\u0001' + (tags.length - 1) + '\u0001';
+                });
+            }
             var h = esc(text), codes = [];
             h = h.replace(/`([^`\n]+)`/g, function (_, c) { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
             // [brackets] and "dialogue" first (quotes are already &quot; so our own class="" attributes can't be matched)
@@ -213,7 +285,8 @@ ST.onUpdate(function (s) {
             h = h.replace(/&quot;(?:(?!&quot;|\n\n)[\s\S])+?&quot;/g, function (m) { return '<span class="st-q">' + m + '</span>'; });
             h = h.replace(/\u201c(?:(?![\u201c\u201d]|\n\n)[\s\S])+?\u201d/g, function (m) { return '<span class="st-q">' + m + '</span>'; });
             h = h.replace(RE3, '<strong class="st-b"><em class="st-i">$1</em></strong>').replace(RE2, '<strong class="st-b">$1</strong>').replace(RE1, '<em class="st-i">$1</em>').replace(RES, '<del>$1</del>');
-            return h.replace(/\u0000(\d+)\u0000/g, function (_, i) { return '<code>' + codes[i] + '</code>'; });
+            h = h.replace(/\u0000(\d+)\u0000/g, function (_, i) { return '<code>' + codes[i] + '</code>'; });
+            return allowTags ? h.replace(/\u0001(\d+)\u0001/g, function (_, i) { return tags[i]; }) : h;
         }
         return { esc: esc, fmt: fmt };
     }
@@ -253,7 +326,7 @@ ST.onUpdate(function (s) {
 
         window.ST = {
             state: {}, _cbs: [],
-            format: function (t) { return fmt(t == null ? '' : t).replace(/\r?\n/g, '<br>'); },
+            format: function (t) { return fmt(t == null ? '' : t, true).replace(/\r?\n/g, '<br>'); },
             render: function (el, t) { el.innerHTML = this.format(t); },
             onUpdate: function (cb) { this._cbs.push(cb); if (this.state.ready) { try { cb(this.state); } catch (x) { console.error(x); } } },
             send: function (t) { parent.postMessage({ type: 'st-send', text: String(t) }, '*'); },
@@ -400,7 +473,7 @@ ST.onUpdate(function (s) {
     function getState() {
         const c = ctx();
         const chat = c.chat || [];
-        const toMsg = (m) => ({ name: m.name, text: m.mes, isUser: !!m.is_user });
+        const toMsg = (m) => ({ name: m.name, text: shownText(m), raw: m.mes, isUser: !!m.is_user });
         const visible = chat.filter((m) => !m.is_system);
         const last = visible[visible.length - 1];
         const lastChar = [...visible].reverse().find((m) => !m.is_user);
@@ -408,7 +481,8 @@ ST.onUpdate(function (s) {
             user: c.name1,
             char: c.name2,
             lastMessage: last ? toMsg(last) : null,
-            lastCharMessage: lastChar ? lastChar.mes : '',
+            lastCharMessage: lastChar ? shownText(lastChar) : '',
+            lastCharMessageRaw: lastChar ? lastChar.mes : '',
             messages: visible.slice(-20).map(toMsg),
             generating: isGenerating(),
             vars: { ...((c.chatMetadata && c.chatMetadata.variables) || {}) },
@@ -1378,7 +1452,7 @@ ST.onUpdate(function (s) {
         el.className = 'mx_row ' + (user ? 'mx_user' : 'mx_char');
         const ch = curChar();
         const av = m.force_avatar || (user ? mxUserAv() : (m.original_avatar ? mxThumb(m.original_avatar) : (ch ? mxThumb(ch.avatar) : '')));
-        const paras = String(m.mes || '').split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${mxFmt(p)}</p>`).join('') || '<p class="mx_dim">...</p>';
+        const paras = String(shownText(m)).split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${mxFmt(p, true)}</p>`).join('') || '<p class="mx_dim">...</p>';
         el.innerHTML = `<div class="mx_bub"><img class="mx_ava" alt="" src="${mxEsc(av)}"><div class="mx_main"><div class="mx_meta"><span class="mx_nm">${mxEsc(user ? 'You' : (m.name || ''))}</span>${user ? '' : '<span class="mx_heart">&#9829;</span>'}<span class="mx_time">${mxEsc(mxTime(m.send_date))}</span><button class="mx_ed" title="Edit message">${IC.edit}</button></div><div class="mx_body">${paras}</div>${lastAi ? `<div class="mx_sw"><button class="mx_swl" title="Previous version">&#8249;</button><span>${(Number(m.swipe_id) || 0) + 1}/${(m.swipes && m.swipes.length) || 1}</span><button class="mx_swr" title="Next version / generate a new one">&#8250;</button></div>` : ''}</div></div>`;
         const img = el.querySelector('img');
         if (!av) img.style.visibility = 'hidden';
@@ -1401,7 +1475,7 @@ ST.onUpdate(function (s) {
             if (!el) { el = document.createElement('div'); mxNodes.set(i, el); }
             el._idx = i;
             const lastAi = i === lastIdx && !m.is_user;
-            const sig = `${m.is_user ? 1 : 0}|${m.name}|${m.swipe_id || 0}|${m.swipes ? m.swipes.length : 1}|${lastAi ? 1 : 0}|${m.mes}|${m.force_avatar || ''}`;
+            const sig = `${m.is_user ? 1 : 0}|${m.name}|${m.swipe_id || 0}|${m.swipes ? m.swipes.length : 1}|${lastAi ? 1 : 0}|${m.mes}|${rxVer}|${m.force_avatar || ''}`;
             if (el._sig !== sig && !el._editing) { mxFill(el, m, lastAi); el._sig = sig; }
             el.classList.toggle('mx_hide', !!mx.search && !String(m.mes || '').toLowerCase().includes(mx.search));
             const want = prev ? prev.nextSibling : list.firstChild;
