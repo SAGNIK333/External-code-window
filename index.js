@@ -1249,13 +1249,13 @@ ST.onUpdate(function (s) {
     })();
     async function shrinkImage(file) {
         const bmp = await createImageBitmap(file);
-        const k = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+        const k = Math.min(1, 3072 / Math.max(bmp.width, bmp.height));
         const cv = document.createElement('canvas');
         cv.width = Math.max(1, Math.round(bmp.width * k)); cv.height = Math.max(1, Math.round(bmp.height * k));
         const g = cv.getContext('2d');
         g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
         g.drawImage(bmp, 0, 0, cv.width, cv.height);
-        return new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.86));
+        return new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.95));
     }
     let galUrls = [];
 
@@ -1303,8 +1303,7 @@ ST.onUpdate(function (s) {
     </footer>
   </main>
   <aside class="mx_right" id="mx_right">
-    <div class="mx_hero"><img id="mx_hero_img" alt=""><div class="mx_hero_fade"></div>
-      <div class="mx_hero_txt"><div class="mx_hero_name"><span id="mx_r_name"></span><span class="mx_heart">&#9829;</span></div><div class="mx_hero_quote" id="mx_r_quote"></div></div></div>
+    <div class="mx_hero"><img id="mx_hero_img" alt="" decoding="async"></div>
     <div class="mx_tabs" id="mx_tabs"><button data-tab="gallery">Gallery</button><button data-tab="info">Info</button><button data-tab="notes">Notes</button><button data-tab="lore">Lore</button></div>
     <div class="mx_tabbody" id="mx_tabbody"></div>
   </aside>
@@ -1588,14 +1587,9 @@ ST.onUpdate(function (s) {
         if (settings().heroTurn !== false && n) src = mx.heroUrls[(Math.max(1, mxTurns()) - 1) % n];
         if (img._want === src) return;
         img._want = src;
-        img.style.opacity = 0;
-        setTimeout(() => {
-            if (img._want !== src) return;
-            img.onload = () => { img.style.opacity = 1; };
-            img.onerror = () => { if (mx.avatarThumb && img.src.indexOf(mx.avatarThumb) < 0) img.src = mx.avatarThumb; else img.style.opacity = 1; };
-            img.style.visibility = src ? '' : 'hidden';
-            if (src) img.src = src;
-        }, 180);
+        img.onerror = () => { if (mx.avatarThumb && img.src.indexOf(mx.avatarThumb) < 0) img.src = mx.avatarThumb; };
+        img.style.visibility = src ? '' : 'hidden';
+        if (src) img.src = src;
     }
     function mxTyping() {
         const items = (ctx().chat || []).filter((m) => m && !m.is_system);
@@ -1641,8 +1635,6 @@ ST.onUpdate(function (s) {
         else tag = 'Pick a character to begin';
         $id('mx_h_name').textContent = name;
         $id('mx_h_tag').textContent = tag;
-        $id('mx_r_name').textContent = name;
-        $id('mx_r_quote').textContent = quote;
         const h = $id('mx_h_av'); h.style.visibility = av ? '' : 'hidden'; h.src = av || '';
         mx.avatarFull = hero; mx.avatarThumb = av;
         mxHero();

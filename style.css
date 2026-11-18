@@ -394,3 +394,12 @@
 .mx_row { contain: layout style; }
 .mx_send { box-shadow: none; }
 .mx_comp textarea { will-change: auto; }
+
+
+/* ---------- v1.12: clean HD hero picture, smaller logo ---------- */
+.mx_hero { background: #0c070a; }
+.mx_hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center center; transition: none !important; opacity: 1 !important; }
+.mx_hero_fade, .mx_hero_txt { display: none !important; }
+.mx_logo { font-size: 14px !important; gap: 5px; padding: 2px 4px 8px; white-space: nowrap; overflow: hidden; min-width: 0; }
+.mx_logo span { overflow: hidden; min-width: 0; }
+.mx_logo_i { width: 20px !important; height: 20px !important; }
